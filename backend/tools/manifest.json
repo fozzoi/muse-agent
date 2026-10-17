@@ -1,0 +1,8 @@
+{
+  "sys_stats": {
+    "description": "Print current OS, Python version, and CPU count as JSON"
+  },
+  "get_disk_space": {
+    "description": "Get the total, used, and free disk space for the root directory '/' in GB. The script should print a JSON object with 'total_gb', 'used_gb', and 'free_gb' keys."
+  }
+}
