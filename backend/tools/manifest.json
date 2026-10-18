@@ -14,6 +14,9 @@
   "web_screenshot": {
     "description": "Visits a website URL and captures a screenshot of the webpage using headless browser. The runtime automatically sends the captured photo to the user."
   },
+  "web_search": {
+    "description": "Performs a live web search for a query and returns titles, URLs, and text snippets of top search results."
+  },
   "install_tesseract_ocr": {
     "description": "Installs Tesseract OCR on the system using apt-get, with sudo and password."
   },
