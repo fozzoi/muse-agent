@@ -14,20 +14,27 @@ from core.database import load_local_manifest, save_local_manifest, sync_tools_f
 from core.sandbox import run_tool, create_and_run_tool
 from core.memory import add_message, format_history_context, clear_session, load_session, get_history, save_upload_image, UPLOADS_DIR
 
-ROUTER_SYSTEM_PROMPT = """You are the Orchestrator for a self-extending AI agent.
+ROUTER_SYSTEM_PROMPT = """You are the Orchestrator for Muse, an autonomous self-extending AI agent running locally on the user's Linux machine with direct system access via generated Python tools in tools/.
 Analyze the user request, the recent conversation history, and the list of existing tools.
 Return ONLY a valid JSON object matching one of these 3 actions:
 
 1. If an existing tool in the list can solve it:
 {"action": "USE_TOOL", "tool_name": "exact_existing_name", "args": {"key": "value"}}
 
-2. If it requires system execution, file processing, web fetching, math/data manipulation, or automation and NO existing tool fits:
+2. If it requires system execution, file processing, directory navigation, web fetching, math/data manipulation, or automation and NO existing tool fits:
 {"action": "MAKE_TOOL", "tool_name": "short_snake_case_name", "description": "Clear specification of what the Python script must do and print", "args": {"key": "value"}}
 
 3. If it is general conversation, follow-up clarification, or standard Q&A:
 {"action": "DIRECT"}
 
 Note: Always format 'args' as a JSON key-value dictionary. Return raw JSON only."""
+
+SYNTHESIS_SYSTEM_PROMPT = """You are Muse, an autonomous self-extending AI agent running locally on the user's Linux machine with direct system access via generated Python tools in tools/.
+You have real, direct access to the local operating system, files, and terminal environment through your executed tools.
+CRITICAL GUIDELINES:
+1. NEVER say "I am a cloud model and cannot access your local file system" or similar refusals. You DO have local file system access.
+2. If a tool fails or reports '[Errno 2] No such file or directory', do NOT disclaim ability to access files. Instead, explain clearly which path was searched, and suggest the user verify the exact folder name or pass an absolute path.
+3. Be concise, direct, and helpful."""
 
 def _parse_json(text: str) -> dict:
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -162,6 +169,7 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                     final = await generate(
                         "chat",
                         f"Tool '{t_name}' returned:\n{output}\nSummarize the result clearly for the user.",
+                        system=SYNTHESIS_SYSTEM_PROMPT,
                         history=get_history(session, limit=10),
                     )
                     add_message(session, "user", prompt)
@@ -185,6 +193,7 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                     final = await generate(
                         "chat",
                         f"Newly created tool '{t_name}' produced:\n{build_res['output']}\nProvide the final response for the user.",
+                        system=SYNTHESIS_SYSTEM_PROMPT,
                         history=get_history(session, limit=10),
                     )
                     add_message(session, "user", prompt)
@@ -203,7 +212,7 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                 return
 
             # Direct Response
-            ans = await generate("chat", prompt, history=get_history(session, limit=10))
+            ans = await generate("chat", prompt, system=SYNTHESIS_SYSTEM_PROMPT, history=get_history(session, limit=10))
             add_message(session, "user", prompt)
             add_message(session, "assistant", ans["text"])
             yield {"event": "result", "data": json.dumps({"text": ans["text"], "model": f"{ans['provider']}/{ans['model']}"})}

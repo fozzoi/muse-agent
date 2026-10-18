@@ -7,32 +7,57 @@ from core.config import Config
 from core.router import generate
 from core.database import save_tool
 
-CODER_SYSTEM_PROMPT = """You are an autonomous Python Tool Maker.
+CODER_SYSTEM_PROMPT = """You are an autonomous Python Tool Maker for Muse Agent running locally on a user's machine.
 Write a standalone Python 3 script that solves the assigned task.
 
-CRITICAL INPUT RULES:
+CRITICAL INPUT & PATH RESOLUTION RULES:
 1. Input is passed via sys.argv[1]. It could be a JSON string, a plain string, or empty.
-2. ALWAYS parse input safely like this:
+2. For tools dealing with files or directories, NEVER default to root ('/'). Enforce home directory expansion (os.path.expanduser) and relative path resolution against '~' or '~/Documents'.
+3. Fall back to os.path.expanduser("~/Documents") or os.path.expanduser("~") instead of '/' when the path is omitted or ambiguous.
+4. ALWAYS parse input and resolve paths safely like this:
 ```python
-import sys, json, os, shutil
+import sys, json, os
 
-raw_input = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else ""
-target = "/"  # sensible fallback default
+raw = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else ""
+target = ""
 
-if raw_input:
+if raw:
     try:
-        data = json.loads(raw_input)
+        data = json.loads(raw)
         if isinstance(data, dict):
-            # Extract first non-empty string value or specific keys
-            target = data.get("path") or data.get("mount") or data.get("directory") or next((str(v) for v in data.values() if isinstance(v, str)), "/")
+            target = (
+                data.get("path")
+                or data.get("directory")
+                or data.get("folder")
+                or data.get("target")
+                or ""
+            )
         elif isinstance(data, str):
             target = data
     except Exception:
-        target = str(raw_input)
+        target = str(raw).strip()
+
+# Path normalization & resolution:
+if not target:
+    target_path = os.path.expanduser("~/Documents")
+else:
+    expanded = os.path.expanduser(target)
+    if os.path.isabs(expanded) and os.path.exists(expanded):
+        target_path = expanded
+    else:
+        # Check relative to ~ and ~/Documents
+        home_candidate = os.path.join(os.path.expanduser("~"), target)
+        doc_candidate = os.path.join(os.path.expanduser("~/Documents"), target)
+        if os.path.exists(home_candidate):
+            target_path = home_candidate
+        elif os.path.exists(doc_candidate):
+            target_path = doc_candidate
+        else:
+            target_path = home_candidate  # Pass resolved candidate to trigger accurate error if missing
 ```
-3. NEVER pass a dictionary object to os or shutil functions (e.g. use shutil.disk_usage(str(target)), NOT shutil.disk_usage(args)).
-4. Print ONLY the final output to stdout (can be JSON string or clean formatted text).
-5. Return ONLY valid Python code inside ```python ... ``` fences. No explanations."""
+5. NEVER pass a raw dictionary object to os or shutil functions (e.g. use str(target_path)).
+6. Print ONLY the final output to stdout (can be JSON string or clean formatted text).
+7. Return ONLY valid Python code inside ```python ... ``` fences. No explanations."""
 
 def _extract_code(raw_text: str) -> str:
     match = re.search(r"```(?:python)?\s*(.*?)```", raw_text, re.DOTALL)

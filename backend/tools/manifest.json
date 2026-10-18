@@ -13,5 +13,8 @@
   },
   "suspend_system": {
     "description": "A Python script that suspends the system using appropriate OS commands (e.g., 'systemctl suspend' on Linux). It should print a JSON object with a key 'status' set to 'suspended' after successful suspension."
+  },
+  "list_documents_muse_agent": {
+    "description": "A Python script that lists all files and directories inside the path ~/Documents/muse-agent and prints a JSON object with a key 'entries' containing an array of entry names. Each entry should be a string representing the file or folder name. The script should handle errors gracefully and print an empty array if the directory does not exist."
   }
 }

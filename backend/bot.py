@@ -12,7 +12,7 @@ from core.router import generate
 from core.database import load_local_manifest
 from core.sandbox import run_tool, create_and_run_tool
 from core.memory import add_message, format_history_context, clear_session, get_history, save_upload_image
-from main import ROUTER_SYSTEM_PROMPT, _parse_json
+from main import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, _parse_json
 
 IMAGE_FILTER = (
     filters.PHOTO
@@ -68,6 +68,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 final = await generate(
                     "chat",
                     f"Tool '{t_name}' returned:\n{output}\nSummarize clearly.",
+                    system=SYNTHESIS_SYSTEM_PROMPT,
                     history=get_history(session_id, limit=10),
                 )
                 add_message(session_id, "user", user_prompt)
@@ -97,6 +98,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 final = await generate(
                     "chat",
                     f"Newly created tool '{t_name}' produced:\n{build_res['output']}\nProvide final answer.",
+                    system=SYNTHESIS_SYSTEM_PROMPT,
                     history=get_history(session_id, limit=10),
                 )
                 add_message(session_id, "user", user_prompt)
@@ -114,7 +116,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # 4. Direct Response with memory
-        ans = await generate("chat", user_prompt, history=get_history(session_id, limit=10))
+        ans = await generate("chat", user_prompt, system=SYNTHESIS_SYSTEM_PROMPT, history=get_history(session_id, limit=10))
         add_message(session_id, "user", user_prompt)
         add_message(session_id, "assistant", ans["text"])
         reply = ans["text"]
