@@ -1,0 +1,61 @@
+[
+  {
+    "id": "wayland-screenshots",
+    "title": "Screen Capture on Ubuntu GNOME Wayland",
+    "problem": "Standard X11 tools (mss, PIL.ImageGrab) produce a blank 6KB black image on Wayland/Mutter.",
+    "solution": "Use headless Google Chrome ('google-chrome --headless --screenshot=...') for webpages, or pyscreenshot with portal for desktop captures.",
+    "tags": [
+      "screenshot",
+      "wayland",
+      "desktop",
+      "display"
+    ]
+  },
+  {
+    "id": "path-resolution",
+    "title": "Path Normalization and Fuzzy Matching",
+    "problem": "User queries often include '~', relative paths, or typos/spaces (e.g., 'muse agent' vs 'muse-agent').",
+    "solution": "Use smart_resolve_path() from core.path_resolver to expand '~', check PROJECT_ROOT, and resolve space/hyphen variations.",
+    "tags": [
+      "filesystem",
+      "paths",
+      "files",
+      "directories"
+    ]
+  },
+  {
+    "id": "desktop-env-vars",
+    "title": "Desktop Environment Variables for Subprocesses",
+    "problem": "System tools for audio, media (playerctl, pactl, wpctl), and notifications fail without runtime bus addresses.",
+    "solution": "Always ensure env has XDG_RUNTIME_DIR set to /run/user/<uid> and DBUS_SESSION_BUS_ADDRESS to unix:path=/run/user/<uid>/bus.",
+    "tags": [
+      "environment",
+      "audio",
+      "dbus",
+      "system"
+    ]
+  },
+  {
+    "id": "package-auto-install",
+    "title": "Automated Dependency Recovery",
+    "problem": "Dynamic scripts fail if a required third-party module is not installed in the virtual environment.",
+    "solution": "Catch ModuleNotFoundError, map the module to its pip package name, run pip install inside backend/venv, and re-execute.",
+    "tags": [
+      "pip",
+      "dependencies",
+      "modules",
+      "self-healing"
+    ]
+  },
+  {
+    "id": "tool-chaining",
+    "title": "Combine Existing Tools Before Making New Tools",
+    "problem": "Compound requests (e.g. check system stats and list files) waste time synthesizing redundant new scripts.",
+    "solution": "Chain primitives sequentially (e.g. sys_info -> fs_list -> FINISH) in the multi-step agent loop instead of MAKE_TOOL.",
+    "tags": [
+      "planning",
+      "orchestration",
+      "tools"
+    ]
+  }
+]

@@ -6,6 +6,7 @@ import subprocess
 from core.config import Config
 from core.router import generate
 from core.database import save_tool
+from core.journal import record_lesson, get_journal_context
 
 CODER_SYSTEM_PROMPT = """You are an elite Linux & Python Systems Engineer building standalone CLI tools for Muse Agent on Ubuntu Linux (GNOME/Wayland/PipeWire).
 
@@ -190,11 +191,15 @@ def run_tool(name: str, args_payload: dict | str = "", allow_auto_install: bool 
 
 async def create_and_run_tool(name: str, description: str, args_payload: dict | str = "", max_retries: int = 3) -> dict:
     arg_str = json.dumps(args_payload) if isinstance(args_payload, dict) else str(args_payload)
+    lessons = get_journal_context(f"{name} {description}")
     prompt = (
         f"Task description: {description}\n"
         f"Expected sys.argv[1] input: {arg_str}\n"
         f"Write the standalone Python script following the template rules."
     )
+    if lessons:
+        prompt += f"\n\nLEARNED SYSTEM HEURISTICS FROM JOURNAL (Avoid known pitfalls):\n{lessons}\n"
+
     last_error = ""
 
     for attempt in range(1, max_retries + 1):
@@ -209,6 +214,13 @@ async def create_and_run_tool(name: str, description: str, args_payload: dict | 
         success, output = run_tool(name, args_payload, allow_auto_install=True)
         if success:
             await save_tool(name, description, code)
+            if attempt > 1 and last_error:
+                record_lesson(
+                    title=f"Fix for {name}",
+                    problem=last_error[:200],
+                    solution=f"Successfully fixed and executed on attempt {attempt}.",
+                    tags=[name, "auto_healed"]
+                )
             return {
                 "success": True,
                 "tool": name,

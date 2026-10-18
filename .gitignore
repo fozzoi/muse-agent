@@ -6,6 +6,7 @@
 # App data & sessions
 data/
 backend/data/
+!backend/data/journal.json
 
 # Python
 __pycache__/
