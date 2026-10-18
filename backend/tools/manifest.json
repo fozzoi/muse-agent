@@ -4,5 +4,14 @@
   },
   "get_disk_space": {
     "description": "Get the total, used, and free disk space for the root directory '/' in GB. The script should print a JSON object with 'total_gb', 'used_gb', and 'free_gb' keys."
+  },
+  "laptop_status": {
+    "description": "A Python script that prints the current operating system, Python version, CPU count, and the total, used, and free disk space for the root directory '/' in GB as a JSON object."
+  },
+  "check_gnome": {
+    "description": "A Python script that determines whether the current desktop environment is GNOME. It should inspect environment variables such as XDG_CURRENT_DESKTOP or run commands like 'gnome-shell --version' if available. The script must print a JSON object with a single key 'using_gnome' whose value is true if GNOME is detected, otherwise false."
+  },
+  "suspend_system": {
+    "description": "A Python script that suspends the system using appropriate OS commands (e.g., 'systemctl suspend' on Linux). It should print a JSON object with a key 'status' set to 'suspended' after successful suspension."
   }
 }
