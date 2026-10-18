@@ -1,6 +1,6 @@
 {
   "browser_agent": {
-    "description": "Automated web navigation, scraping, and interaction with persistent profile. Actions: 'navigate' (loads page, scrapes clean readable text, and takes screenshot), 'click' (clicks element selector), 'type' (fills text into selector), and 'login_session' (opens Chrome GUI on your desktop so you can log into any site like Instagram once without giving credentials in chat)."
+    "description": "Automated web navigation, scraping, and interaction with persistent profile. Supports 100% HEADLESS logins without opening any window (action='login', 'username', 'password'), navigation and scraping ('navigate'), element interaction ('click', 'type'), and optional desktop window sessions ('open_window')."
   },
   "sys_exec": {
     "description": "Safely executes a bash shell command (e.g. system commands, cli queries, process checks) with a 15-second timeout and returns exit code, stdout, and stderr."
