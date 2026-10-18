@@ -26,8 +26,8 @@
   {
     "id": "desktop-env-vars",
     "title": "Desktop Environment Variables for Subprocesses",
-    "problem": "System tools for audio, media (playerctl, pactl, wpctl), and notifications fail without runtime bus addresses.",
-    "solution": "Always ensure env has XDG_RUNTIME_DIR set to /run/user/<uid> and DBUS_SESSION_BUS_ADDRESS to unix:path=/run/user/<uid>/bus.",
+    "problem": "System tools for audio, media (wpctl, pactl), and notifications fail without runtime bus addresses, or when path is prefixed with '~' like '~/run/user/...'.",
+    "solution": "Always set exact absolute path `env['XDG_RUNTIME_DIR'] = f'/run/user/{os.getuid()}'` (NEVER prefix with '~') and `env['DBUS_SESSION_BUS_ADDRESS'] = f'unix:path=/run/user/{os.getuid()}/bus'`.",
     "tags": [
       "environment",
       "audio",
@@ -56,6 +56,16 @@
       "planning",
       "orchestration",
       "tools"
+    ]
+  },
+  {
+    "id": "lesson-6",
+    "title": "Fix for mute_audio",
+    "problem": "File \"/home/fozzoi/Documents/muse-agent/backend/tools/mute_audio.py\", line 14\n    cand = os.path.join(base, p.lstrip(\"/\\\"))\n                                       ^\nSyntaxError: unterminated string li",
+    "solution": "Successfully fixed and executed on attempt 2.",
+    "tags": [
+      "mute_audio",
+      "auto_healed"
     ]
   }
 ]

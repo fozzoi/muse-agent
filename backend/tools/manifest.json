@@ -1,38 +1,44 @@
 {
   "fs_list": {
-    "description": "Lists all files and subdirectories inside a directory path, providing entry names, types (file/directory), and sizes. Accepts relative paths or ~ expansion."
+    "description": "Lists files and subdirectories inside a directory path, providing names, types, and sizes. Accepts relative paths or ~."
   },
   "fs_read": {
-    "description": "Reads and prints the text content of any file (up to 10,000 characters). Resolves relative paths or ~ expansion."
+    "description": "Reads and prints the text content of any file up to 10,000 characters. Resolves relative paths or ~."
   },
   "sys_info": {
-    "description": "Returns operating system details, CPU cores, RAM usage, root disk space, and uptime as JSON."
+    "description": "Returns basic operating system details, CPU cores, RAM usage, root disk space, and uptime as JSON."
+  },
+  "system_monitor": {
+    "description": "Proactive health monitoring: reports CPU load, memory usage, disk stats, battery percentage, uptime, resource alerts, and top 5 memory/CPU consuming processes."
+  },
+  "media_control": {
+    "description": "Controls audio volume, mute toggle, WirePlumber audio sinks, and Bluetooth status. Accepts actions like 'status', 'volume_up', 'volume_down', 'set_volume' (with 'value', e.g. '50%'), 'mute', 'unmute', or 'bluetooth'."
+  },
+  "git_manager": {
+    "description": "Inspects local Git repositories. Actions include 'status' (changed/untracked files), 'log' (recent commit history), 'branch' (all branches), and 'diff' (unstaged diff stat). Accepts 'path' for any local project directory."
+  },
+  "sys_exec": {
+    "description": "Safely executes a bash shell command (e.g. system commands, cli queries) with a 15-second timeout and returns exit code, stdout, and stderr."
   },
   "take_screenshot": {
-    "description": "Captures a desktop screenshot and saves it as an image file. The runtime automatically sends the captured photo to the user."
+    "description": "Captures a desktop screenshot and saves it as an image file. Automatically delivers the captured photo to Telegram."
   },
   "web_screenshot": {
-    "description": "Visits a website URL and captures a screenshot of the webpage using headless browser. The runtime automatically sends the captured photo to the user."
+    "description": "Visits a website URL and captures a screenshot of the webpage using headless browser. Automatically delivers the photo."
   },
   "web_search": {
     "description": "Performs a live web search for a query and returns titles, URLs, and text snippets of top search results."
   },
-  "install_tesseract_ocr": {
-    "description": "Installs Tesseract OCR on the system using apt-get, with sudo and password."
-  },
   "run_tesseract_ocr": {
-    "description": "Run tesseract OCR on a given image file and output extracted text"
+    "description": "Runs Tesseract OCR on a given image file path to extract and return readable text."
   },
   "list_flatpak_apps": {
-    "description": "Run the command `flatpak list --app --columns=application,branch,version,installed` to retrieve a list of all installed Flatpak applications on the system and print the output to the console."
+    "description": "Lists installed Flatpak applications on the system."
   },
   "open_zen_browser": {
-    "description": "Run the command to launch Zen Browser via Flatpak: `flatpak run app.zen_browser.zen`. The tool should execute the command and print any output or errors."
+    "description": "Launches the Zen Browser Flatpak on the host desktop."
   },
   "delete_screenshots": {
-    "description": "Deletes all screenshot image files (PNG) located in the user's Pictures/Screenshots directory and the /tmp directory that match the pattern 'screenshot*.png' or 'anuoopt_screenshot.png'. The script will list the files to be deleted, remove them, and print a summary of how many files were removed and any errors encountered."
-  },
-  "top_mem_processes": {
-    "description": "Run a Python script that executes `ps -eo pid,comm,%mem --sort=-%mem | head -n 6` to list the top 5 processes consuming the most memory, then print the output to the console."
+    "description": "Cleans up temporary screenshot files from Pictures/Screenshots and /tmp."
   }
 }

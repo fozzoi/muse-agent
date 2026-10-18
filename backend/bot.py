@@ -259,6 +259,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             route_res = await generate("router", planner_prompt, system=ROUTER_SYSTEM_PROMPT)
             decision = _parse_json(route_res["text"])
             action = decision.get("action", "FINISH" if tool_trace else "DIRECT")
+            print(f"[Telegram Bot] Step {step_count}: Action={action}, Tool={decision.get('tool_name')}, Args={decision.get('args')}", flush=True)
 
             if action == "FINISH":
                 break
@@ -269,6 +270,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ans = await generate("chat", user_prompt, system=direct_sys, history=get_history(session_id, limit=10))
                     add_message(session_id, "user", user_prompt)
                     add_message(session_id, "assistant", ans["text"])
+                    print(f"[Telegram Bot] Direct chat response ({len(ans['text'])} chars) to {chat_id}", flush=True)
                     await deliver_response(update, status_msg, ans["text"])
                     return
                 else:
@@ -282,7 +284,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
 
+                print(f"[Telegram Bot] Step {step_count}: Running '{t_name}' with {tool_args}", flush=True)
                 success, output = run_tool(t_name, tool_args)
+                print(f"[Telegram Bot] Step {step_count}: Tool '{t_name}' success={success} (output {len(output)} chars)", flush=True)
                 if success:
                     tool_trace.append({"tool": t_name, "args": tool_args, "output": output})
                     combined_raw.append(f"[{t_name}]:\n{output}")
@@ -308,7 +312,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception:
                     pass
 
+                print(f"[Telegram Bot] Step {step_count}: Synthesizing '{t_name}': {t_desc[:80]}", flush=True)
                 build_res = await create_and_run_tool(t_name, t_desc, tool_args)
+                print(f"[Telegram Bot] Step {step_count}: Synthesis result success={build_res.get('success')}", flush=True)
                 if build_res["success"]:
                     created_tool_name = t_name
                     tool_trace.append({"tool": t_name, "args": tool_args, "output": build_res["output"]})
@@ -345,6 +351,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_message(session_id, "assistant", reply_text)
 
         img_to_send = images_collected[-1] if images_collected else None
+        print(f"[Telegram Bot] Delivering final response ({len(reply_text)} chars, image={img_to_send}) to {chat_id}", flush=True)
         await deliver_response(update, status_msg, reply_text, img_to_send)
 
     except Exception as e:
