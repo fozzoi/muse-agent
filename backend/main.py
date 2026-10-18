@@ -11,9 +11,7 @@ from core.config import Config
 from core.router import generate
 from core.database import load_local_manifest, save_local_manifest, sync_tools_from_cloud
 from core.sandbox import run_tool, create_and_run_tool
-
-# In-memory session chat history: list of {"role": "user"|"assistant", "content": "..."}
-CHAT_HISTORY: list[dict] = []
+from core.memory import add_message, format_history_context, clear_session, load_session, get_history
 
 ROUTER_SYSTEM_PROMPT = """You are the Orchestrator for a self-extending AI agent.
 Analyze the user request, the recent conversation history, and the list of existing tools.
@@ -38,12 +36,6 @@ def _parse_json(text: str) -> dict:
         except Exception:
             pass
     return {"action": "DIRECT"}
-
-def _format_history_context() -> str:
-    recent = CHAT_HISTORY[-6:]
-    if not recent:
-        return "None"
-    return "\n".join([f"{msg['role'].upper()}: {msg['content']}" for msg in recent])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -88,20 +80,24 @@ def delete_tool(name: str):
         os.remove(script_path)
     return {"status": "deleted", "tool": name}
 
+@app.get("/api/chat/history")
+def get_chat_history(session_id: str = "web_default"):
+    return load_session(session_id)
+
 @app.post("/api/chat/clear")
-def clear_history():
-    global CHAT_HISTORY
-    CHAT_HISTORY = []
+def clear_history(session_id: str = "web_default"):
+    clear_session(session_id)
     return {"status": "cleared"}
 
 class ChatRequest(BaseModel):
     prompt: str = ""
     image: str | None = None
     mime_type: str | None = "image/jpeg"
+    session_id: str | None = "web_default"
 
-async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "image/jpeg"):
+async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "image/jpeg", session_id: str = "web_default"):
+    session = session_id or "web_default"
     async def event_generator():
-        global CHAT_HISTORY
         try:
             # 1. Vision mode: image analysis
             if image:
@@ -113,9 +109,10 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                     system="You are an expert AI vision analyst. Inspect the image closely and provide clear, accurate, and structured observations.",
                     image_data=image,
                     mime_type=mime_type or "image/jpeg",
+                    history=get_history(session, limit=6),
                 )
-                CHAT_HISTORY.append({"role": "user", "content": f"[Image attached] {vision_prompt}"})
-                CHAT_HISTORY.append({"role": "assistant", "content": final["text"]})
+                add_message(session, "user", f"[Image attached] {vision_prompt}")
+                add_message(session, "assistant", final["text"])
                 yield {
                     "event": "result",
                     "data": json.dumps({
@@ -127,7 +124,7 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
 
             # 2. Standard text mode: triage & tool synthesis
             manifest = load_local_manifest()
-            history_context = _format_history_context()
+            history_context = format_history_context(session)
 
             yield {"event": "status", "data": json.dumps({"step": "Routing request...", "tools_count": len(manifest)})}
 
@@ -160,12 +157,11 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                 if success:
                     final = await generate(
                         "chat",
-                        f"Conversation History:\n{history_context}\n\n"
-                        f"User asked: {prompt}\nTool '{t_name}' returned:\n{output}\n"
-                        f"Summarize the result clearly.",
+                        f"Tool '{t_name}' returned:\n{output}\nSummarize the result clearly for the user.",
+                        history=get_history(session, limit=10),
                     )
-                    CHAT_HISTORY.append({"role": "user", "content": prompt})
-                    CHAT_HISTORY.append({"role": "assistant", "content": final["text"]})
+                    add_message(session, "user", prompt)
+                    add_message(session, "assistant", final["text"])
                     yield {"event": "result", "data": json.dumps({"text": final["text"], "raw_tool_output": output, "model": f"{final['provider']}/{final['model']}"})}
                     return
                 else:
@@ -184,12 +180,11 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                     yield {"event": "status", "data": json.dumps({"step": f"Tool '{t_name}' created. Formatting answer..."})}
                     final = await generate(
                         "chat",
-                        f"Conversation History:\n{history_context}\n\n"
-                        f"User asked: {prompt}\nTool '{t_name}' produced:\n{build_res['output']}\n"
-                        f"Provide the final response.",
+                        f"Newly created tool '{t_name}' produced:\n{build_res['output']}\nProvide the final response for the user.",
+                        history=get_history(session, limit=10),
                     )
-                    CHAT_HISTORY.append({"role": "user", "content": prompt})
-                    CHAT_HISTORY.append({"role": "assistant", "content": final["text"]})
+                    add_message(session, "user", prompt)
+                    add_message(session, "assistant", final["text"])
                     yield {
                         "event": "result",
                         "data": json.dumps({
@@ -204,10 +199,9 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                 return
 
             # Direct Response
-            chat_prompt = f"Conversation History:\n{history_context}\n\nUser: {prompt}"
-            ans = await generate("chat", chat_prompt)
-            CHAT_HISTORY.append({"role": "user", "content": prompt})
-            CHAT_HISTORY.append({"role": "assistant", "content": ans["text"]})
+            ans = await generate("chat", prompt, history=get_history(session, limit=10))
+            add_message(session, "user", prompt)
+            add_message(session, "assistant", ans["text"])
             yield {"event": "result", "data": json.dumps({"text": ans["text"], "model": f"{ans['provider']}/{ans['model']}"})}
         except Exception as e:
             yield {"event": "error", "data": json.dumps({"error": str(e)})}
@@ -215,9 +209,9 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
     return EventSourceResponse(event_generator())
 
 @app.get("/api/chat/stream")
-async def chat_stream_get(prompt: str):
-    return await _stream_chat(prompt)
+async def chat_stream_get(prompt: str, session_id: str = "web_default"):
+    return await _stream_chat(prompt, session_id=session_id)
 
 @app.post("/api/chat/stream")
 async def chat_stream_post(req: ChatRequest):
-    return await _stream_chat(req.prompt, req.image, req.mime_type or "image/jpeg")
+    return await _stream_chat(req.prompt, req.image, req.mime_type or "image/jpeg", session_id=req.session_id or "web_default")

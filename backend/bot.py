@@ -11,20 +11,30 @@ from core.config import Config
 from core.router import generate
 from core.database import load_local_manifest
 from core.sandbox import run_tool, create_and_run_tool
+from core.memory import add_message, format_history_context, clear_session, get_history
 from main import ROUTER_SYSTEM_PROMPT, _parse_json
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Muse Agent is online. Send me any task, question, or send a photo for AI vision analysis!")
+    await update.message.reply_text("Muse Agent is online. Send me any task, question, or send a photo for AI vision analysis! Send /clear to reset memory.")
+
+async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    clear_session(f"tg_{chat_id}")
+    await update.message.reply_text("🧹 Conversation memory cleared!")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    session_id = f"tg_{chat_id}"
     user_prompt = update.message.text
     status_msg = await update.message.reply_text("🤔 Routing request...")
 
     try:
         manifest = load_local_manifest()
+        history_context = format_history_context(session_id)
 
-        # 1. Triage via Router AI
+        # 1. Triage via Router AI with conversation context
         router_prompt = (
+            f"Conversation History:\n{history_context}\n\n"
             f"Existing tools:\n{json.dumps(manifest)}\n\n"
             f"Current user request: {user_prompt}"
         )
@@ -42,8 +52,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if success:
                 final = await generate(
                     "chat",
-                    f"User asked: {user_prompt}\nTool '{t_name}' returned:\n{output}\nSummarize clearly.",
+                    f"Tool '{t_name}' returned:\n{output}\nSummarize clearly.",
+                    history=get_history(session_id, limit=10),
                 )
+                add_message(session_id, "user", user_prompt)
+                add_message(session_id, "assistant", final["text"])
                 await status_msg.edit_text(final["text"])
                 return
             else:
@@ -61,16 +74,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await status_msg.edit_text(" Formatting final response...")
                 final = await generate(
                     "chat",
-                    f"User asked: {user_prompt}\nNewly created tool '{t_name}' produced:\n{build_res['output']}\nProvide final answer.",
+                    f"Newly created tool '{t_name}' produced:\n{build_res['output']}\nProvide final answer.",
+                    history=get_history(session_id, limit=10),
                 )
+                add_message(session_id, "user", user_prompt)
+                add_message(session_id, "assistant", final["text"])
                 reply_text = f"{final['text']}\n\n*(Created tool: `{t_name}.py`)*"
                 await status_msg.edit_text(reply_text, parse_mode="Markdown")
             else:
                 await status_msg.edit_text(f"❌ Tool build failed:\n`{build_res['output']}`", parse_mode="Markdown")
             return
 
-        # 4. Direct Response
-        ans = await generate("chat", user_prompt)
+        # 4. Direct Response with memory
+        ans = await generate("chat", user_prompt, history=get_history(session_id, limit=10))
+        add_message(session_id, "user", user_prompt)
+        add_message(session_id, "assistant", ans["text"])
         await status_msg.edit_text(ans["text"])
 
     except Exception as e:
@@ -80,6 +98,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.photo:
         return
 
+    chat_id = str(update.effective_chat.id)
+    session_id = f"tg_{chat_id}"
     caption = update.message.caption or "Analyze this image and describe what you see in detail."
     status_msg = await update.message.reply_text("🔍 Analyzing image with Muse Vision...")
 
@@ -96,7 +116,11 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             system="You are an expert AI vision analyst. Inspect the image closely and provide clear, accurate, and structured observations.",
             image_data=b64_image,
             mime_type="image/jpeg",
+            history=get_history(session_id, limit=6),
         )
+
+        add_message(session_id, "user", f"[Photo attached] {caption}")
+        add_message(session_id, "assistant", res["text"])
 
         reply = f"{res['text']}\n\n*(Analyzed via `{res['provider']}/{res['model']}`)*"
         await status_msg.edit_text(reply)
@@ -125,6 +149,7 @@ def main():
     app = ApplicationBuilder().token(token).request(request).build()
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("clear", clear_chat))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 

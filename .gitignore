@@ -3,6 +3,10 @@
 *.env
 !.env.example
 
+# App data & sessions
+data/
+backend/data/
+
 # Python
 __pycache__/
 *.py[cod]

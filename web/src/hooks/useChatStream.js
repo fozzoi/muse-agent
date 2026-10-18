@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { streamEndpoint } from "../lib/api";
+import { getChatHistory, streamEndpoint } from "../lib/api";
 
 const RETRY_RE = /retry|attempt|self-debug|fixing|failed|error/i;
 let n = 0;
@@ -165,7 +165,28 @@ export function useChatStream({ onToolCreated } = {}) {
     setMessages([]);
   }, [close]);
 
-  useEffect(() => () => abortCtrlRef.current?.abort(), []);
+  useEffect(() => {
+    let active = true;
+    getChatHistory()
+      .then((history) => {
+        if (!active || !Array.isArray(history) || history.length === 0) return;
+        setMessages(
+          history.map((msg, idx) => ({
+            id: `hist-${idx}-${Date.now()}`,
+            role: msg.role,
+            text: msg.content,
+            status: "done",
+            steps: [],
+          }))
+        );
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+      abortCtrlRef.current?.abort();
+    };
+  }, []);
 
   return { messages, streaming, send, abort, reset };
 }

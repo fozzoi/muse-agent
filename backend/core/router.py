@@ -42,11 +42,21 @@ async def _call_openai_compatible(
     system: str,
     image_data: str | None = None,
     mime_type: str = "image/jpeg",
+    history: list[dict] | None = None,
 ) -> str:
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    messages = [{"role": "system", "content": system}]
+    if history:
+        for m in history:
+            role = "assistant" if m.get("role") in ("assistant", "model") else "user"
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            messages.append({"role": role, "content": content})
+
     if image_data:
         user_content = [
             {"type": "text", "text": prompt},
@@ -55,12 +65,11 @@ async def _call_openai_compatible(
     else:
         user_content = prompt
 
+    messages.append({"role": "user", "content": user_content})
+
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_content},
-        ],
+        "messages": messages,
         "temperature": 0.2,
     }
     async with httpx.AsyncClient(timeout=35.0) as client:
@@ -74,19 +83,44 @@ async def _call_gemini(
     system: str,
     image_data: str | None = None,
     mime_type: str = "image/jpeg",
+    history: list[dict] | None = None,
 ) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={Config.GEMINI_API_KEY}"
-    parts = [{"text": prompt}]
+    contents = []
+    if history:
+        merged = []
+        for m in history:
+            role = "model" if m.get("role") in ("assistant", "model") else "user"
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            if merged and merged[-1]["role"] == role:
+                merged[-1]["parts"].append({"text": content})
+            else:
+                merged.append({"role": role, "parts": [{"text": content}]})
+        # Gemini requires the first turn to be 'user'
+        while merged and merged[0]["role"] == "model":
+            merged.pop(0)
+        contents.extend(merged)
+
+    current_parts = [{"text": prompt}]
     if image_data:
-        parts.append({
+        current_parts.append({
             "inline_data": {
                 "mime_type": mime_type,
                 "data": image_data,
             }
         })
+
+    # Ensure alternating roles for Gemini
+    if contents and contents[-1]["role"] == "user":
+        contents[-1]["parts"].extend(current_parts)
+    else:
+        contents.append({"role": "user", "parts": current_parts})
+
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
-        "contents": [{"parts": parts}],
+        "contents": contents,
         "generationConfig": {"temperature": 0.2},
     }
     async with httpx.AsyncClient(timeout=35.0) as client:
@@ -104,6 +138,7 @@ async def generate(
     system: str = "You are a helpful AI assistant.",
     image_data: str | None = None,
     mime_type: str = "image/jpeg",
+    history: list[dict] | None = None,
 ) -> dict:
     """Routes request through providers with failover and rate-limit backoff."""
     fallback_role = "vision" if image_data else "chat"
@@ -123,12 +158,13 @@ async def generate(
                         model,
                         prompt,
                         system,
+                        history=history,
                     )
                     return {"text": text, "provider": provider, "model": model}
 
                 # 2. Gemini (multimodal native)
                 elif provider == "gemini" and Config.GEMINI_API_KEY and not Config.GEMINI_API_KEY.startswith("AIza_your"):
-                    text = await _call_gemini(model, prompt, system, image_data=image_data, mime_type=mime_type)
+                    text = await _call_gemini(model, prompt, system, image_data=image_data, mime_type=mime_type, history=history)
                     return {"text": text, "provider": provider, "model": model}
 
                 # 3. Mistral
@@ -141,6 +177,7 @@ async def generate(
                         model,
                         prompt,
                         system,
+                        history=history,
                     )
                     return {"text": text, "provider": provider, "model": model}
 
@@ -154,6 +191,7 @@ async def generate(
                         system,
                         image_data=image_data,
                         mime_type=mime_type,
+                        history=history,
                     )
                     return {"text": text, "provider": provider, "model": model}
 
