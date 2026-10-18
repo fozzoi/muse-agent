@@ -1,29 +1,14 @@
 {
-  "sys_stats": {
-    "description": "Print current OS, Python version, and CPU count as JSON"
+  "fs_list": {
+    "description": "Lists all files and subdirectories inside a directory path, providing entry names, types (file/directory), and sizes. Accepts relative paths or ~ expansion."
   },
-  "get_disk_space": {
-    "description": "Get the total, used, and free disk space for the root directory '/' in GB. The script should print a JSON object with 'total_gb', 'used_gb', and 'free_gb' keys."
+  "fs_read": {
+    "description": "Reads and prints the text content of any file (up to 10,000 characters). Resolves relative paths or ~ expansion."
   },
-  "laptop_status": {
-    "description": "A Python script that prints the current operating system, Python version, CPU count, and the total, used, and free disk space for the root directory '/' in GB as a JSON object."
-  },
-  "check_gnome": {
-    "description": "A Python script that determines whether the current desktop environment is GNOME. It should inspect environment variables such as XDG_CURRENT_DESKTOP or run commands like 'gnome-shell --version' if available. The script must print a JSON object with a single key 'using_gnome' whose value is true if GNOME is detected, otherwise false."
-  },
-  "suspend_system": {
-    "description": "A Python script that suspends the system using appropriate OS commands (e.g., 'systemctl suspend' on Linux). It should print a JSON object with a key 'status' set to 'suspended' after successful suspension."
-  },
-  "list_documents_muse_agent": {
-    "description": "A Python script that lists all files and directories inside the path ~/Documents/muse-agent and prints a JSON object with a key 'entries' containing an array of entry names. Each entry should be a string representing the file or folder name. The script should handle errors gracefully and print an empty array if the directory does not exist."
+  "sys_info": {
+    "description": "Returns operating system details, CPU cores, RAM usage, root disk space, and uptime as JSON."
   },
   "take_screenshot": {
-    "description": "Captures a screenshot of the user's desktop display and saves it to ~/Pictures/Screenshots or a specified path."
-  },
-  "take_screenshot_auto_install": {
-    "description": "Captures a screenshot of the user's desktop display, automatically installing pyscreenshot if not present, and saves it to ~/Pictures/Screenshots or a specified path."
-  },
-  "read_file_content": {
-    "description": "Read the content of a specified file path and print it as plain text."
+    "description": "Captures a desktop screenshot and saves it as an image file. The runtime automatically sends the captured photo to the user."
   }
 }

@@ -7,64 +7,45 @@ from core.config import Config
 from core.router import generate
 from core.database import save_tool
 
-CODER_SYSTEM_PROMPT = """You are an autonomous Python Tool Maker for Muse Agent running locally on a user's Linux machine.
-Write a standalone Python 3 script that solves the assigned task.
+CODER_SYSTEM_PROMPT = """You are an elite Linux & Python Systems Engineer building standalone CLI tools for Muse Agent on Ubuntu Linux (GNOME/Wayland/PipeWire).
 
-SYSTEM & ENVIRONMENT AWARENESS:
-1. Muse runs locally on Ubuntu Linux. You have real local filesystem, process, and network access.
-2. PREFER Python Standard Library (e.g., urllib.request, json, os, sys, pathlib, shutil, subprocess, sqlite3, csv, re, math, time) whenever possible to avoid unnecessary external dependencies.
-3. If an external package is genuinely required (e.g. requests, pillow, beautifulsoup4, pytesseract), use clean standard imports. The runtime has self-healing auto-installation to install missing packages on demand.
-4. For GUI / Desktop / Display operations: The user's system runs GNOME on Wayland (Mutter). Standard X11 screen-capture tools (e.g. basic PIL ImageGrab) may return blank frames. Use native utilities (e.g. gnome-screenshot, grim, or inspecting ~/Pictures/Screenshots) when appropriate.
-
-CRITICAL INPUT & PATH RESOLUTION RULES:
-1. Input is passed via sys.argv[1]. It could be a JSON string, a plain string, or empty.
-2. For tools dealing with files or directories, NEVER default to root ('/'). Enforce home directory expansion (os.path.expanduser) and relative path resolution against '~' or '~/Documents'.
-3. Fall back to os.path.expanduser("~/Documents") or os.path.expanduser("~") instead of '/' when the path is omitted or ambiguous.
-4. ALWAYS parse input and resolve paths safely like this:
+RULES FOR WRITING TOOLS:
+1. Input is passed as a JSON string in `sys.argv[1]`. Parse it cleanly:
 ```python
 import sys, json, os
 
-raw = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else ""
-target = ""
-
-if raw:
-    try:
-        data = json.loads(raw)
-        if isinstance(data, dict):
-            target = (
-                data.get("path")
-                or data.get("directory")
-                or data.get("folder")
-                or data.get("target")
-                or ""
-            )
-        elif isinstance(data, str):
-            target = data
-    except Exception:
-        target = str(raw).strip()
-
-# Path normalization & resolution:
-if not target:
-    target_path = os.path.expanduser("~/Documents")
-else:
-    expanded = os.path.expanduser(target)
-    if os.path.isabs(expanded) and os.path.exists(expanded):
-        target_path = expanded
-    else:
-        # Check relative to ~ and ~/Documents
-        home_candidate = os.path.join(os.path.expanduser("~"), target)
-        doc_candidate = os.path.join(os.path.expanduser("~/Documents"), target)
-        if os.path.exists(home_candidate):
-            target_path = home_candidate
-        elif os.path.exists(doc_candidate):
-            target_path = doc_candidate
-        else:
-            target_path = home_candidate  # Pass candidate to trigger accurate error if missing
+raw = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else "{}"
+try:
+    args = json.loads(raw)
+    if not isinstance(args, dict):
+        args = {"input": str(args)}
+except Exception:
+    args = {"input": raw}
 ```
-5. NEVER pass a raw dictionary object to os or shutil functions (e.g. use str(target_path)).
-6. Wrap risky operations in try-except blocks with meaningful error messages.
-7. Print ONLY the final output to stdout (can be JSON string or clean formatted text).
-8. Return ONLY valid Python code inside ```python ... ``` fences. No conversational explanations."""
+
+2. ONLY apply path resolution IF the task is specifically about files or directories:
+```python
+def resolve_path(p: str) -> str:
+    if not p:
+        return os.path.expanduser("~")
+    p = os.path.expanduser(str(p).strip())
+    if os.path.isabs(p) and os.path.exists(p):
+        return p
+    for base in [os.path.expanduser("~"), os.path.expanduser("~/Documents"), os.path.expanduser("~/Documents/muse-agent")]:
+        cand = os.path.join(base, p.lstrip("/\\"))
+        if os.path.exists(cand):
+            return cand
+    return os.path.join(os.path.expanduser("~"), p.lstrip("/\\"))
+```
+
+3. DO NOT swallow exceptions with try...except that print an error and exit 0! Let exceptions raise naturally OR print to sys.stderr and call sys.exit(1) so the self-debugger can see the full Python traceback and fix the code.
+
+4. For Linux system tasks:
+- Audio/Media: Use playerctl (if installed) or wpctl / pactl via subprocess.check_output.
+- Hardware/System: Read /proc, /sys, shutil, psutil, or standard CLI utilities (df, free, ip, lsblk, upower).
+
+5. Print ONLY the clean final result (JSON or clear text) to stdout.
+6. Return ONLY valid Python code inside ```python ... ``` fences."""
 
 # Map commonly imported module names to their PyPI package names
 COMMON_PACKAGE_MAP = {
@@ -86,6 +67,7 @@ COMMON_PACKAGE_MAP = {
     "telegram": "python-telegram-bot",
     "websocket": "websocket-client",
     "dns": "dnspython",
+    "pyscreenshot": "pyscreenshot",
 }
 
 def get_python_executable() -> str:
@@ -145,15 +127,24 @@ def run_tool(name: str, args_payload: dict | str = "", allow_auto_install: bool 
 
     python_bin = get_python_executable()
 
+    env = os.environ.copy()
+    uid = os.getuid()
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
+
     try:
         res = subprocess.run(
             [python_bin, script_path, arg_str],
+            env=env,
             capture_output=True,
             text=True,
             timeout=25,
         )
         if res.returncode != 0:
-            err = res.stderr.strip() or "Exited with non-zero code."
+            err = (
+                f"{res.stderr.strip()}\n{res.stdout.strip()}".strip()
+                or "Exited with non-zero code."
+            )
             # Self-healing attempt: if a module is missing, try auto-installing once and re-run
             if allow_auto_install:
                 missing_mod = extract_missing_module(err)
@@ -163,15 +154,35 @@ def run_tool(name: str, args_payload: dict | str = "", allow_auto_install: bool 
                         print(f"[Sandbox Self-Healing] 🔄 Re-running tool '{name}' after installing '{missing_mod}'...", flush=True)
                         retry_res = subprocess.run(
                             [python_bin, script_path, arg_str],
+                            env=env,
                             capture_output=True,
                             text=True,
                             timeout=25,
                         )
                         if retry_res.returncode == 0:
-                            return True, retry_res.stdout.strip()
-                        err = retry_res.stderr.strip() or err
+                            retry_out = retry_res.stdout.strip()
+                            if not (
+                                retry_out.startswith("ERROR:")
+                                or retry_out.startswith("Traceback (most recent call last):")
+                                or "Traceback (most recent call last):" in retry_out
+                            ):
+                                return True, retry_out
+                        err = (
+                            f"{retry_res.stderr.strip()}\n{retry_res.stdout.strip()}".strip()
+                            or err
+                        )
             return False, err
-        return True, res.stdout.strip()
+
+        out = res.stdout.strip()
+        # Fail tools that caught their own exceptions or printed tracebacks
+        if (
+            out.startswith("ERROR:")
+            or out.startswith("Traceback (most recent call last):")
+            or "Traceback (most recent call last):" in out
+        ):
+            return False, out
+
+        return True, out
     except subprocess.TimeoutExpired:
         return False, "Error: Tool execution timed out after 25 seconds."
     except Exception as e:

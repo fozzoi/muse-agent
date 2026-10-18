@@ -5,32 +5,31 @@ from core.config import Config
 # Verified active models across providers
 ROLE_ROUTES = {
     "router": [
+        ("groq", "llama-3.3-70b-versatile"),
         ("groq", "openai/gpt-oss-20b"),
-        ("groq", "qwen/qwen3.8-27b"),
-        ("gemini", "gemini-2.5-flash-lite"),
+        ("gemini", "gemini-2.5-flash"),
         ("openrouter", "openrouter/free"),
     ],
     "coder": [
-        ("mistral", "codestral-latest"),
+        ("gemini", "gemini-2.5-flash"),
+        ("groq", "llama-3.3-70b-versatile"),
         ("groq", "openai/gpt-oss-120b"),
-        ("groq", "qwen/qwen3.8-27b"),
-        ("gemini", "gemini-2.5-flash-lite"),
+        ("mistral", "codestral-latest"),
         ("openrouter", "openrouter/free"),
     ],
     "chat": [
+        ("groq", "llama-3.3-70b-versatile"),
         ("groq", "openai/gpt-oss-120b"),
-        ("groq", "qwen/qwen3.8-27b"),
-        ("gemini", "gemini-2.5-flash-lite"),
+        ("gemini", "gemini-2.5-flash"),
         ("openrouter", "openrouter/free"),
     ],
     "vision": [
-        ("gemini", "gemini-2.5-flash-lite"),
+        ("gemini", "gemini-2.5-flash"),
         ("openrouter", "openrouter/free"),
     ],
     "heavy": [
-        ("groq", "openai/gpt-oss-120b"),
-        ("mistral", "codestral-latest"),
-        ("gemini", "gemini-2.5-flash-lite"),
+        ("gemini", "gemini-2.5-flash"),
+        ("groq", "llama-3.3-70b-versatile"),
     ],
 }
 

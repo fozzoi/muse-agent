@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import base64
 import asyncio
@@ -65,6 +66,62 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_session(f"tg_{chat_id}")
     await update.message.reply_text("🧹 Conversation memory cleared!")
 
+def extract_image_from_tool_output(output: str) -> str | None:
+    if not output:
+        return None
+    try:
+        data = json.loads(output)
+        if isinstance(data, dict):
+            for k in ("file_path", "image_path", "path", "file", "dest_file"):
+                val = data.get(k)
+                if val and isinstance(val, str):
+                    exp = os.path.expanduser(val.strip())
+                    if os.path.isfile(exp) and exp.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                        return exp
+    except Exception:
+        pass
+
+    matches = re.findall(r'(?:[\'"]|(?<=\s)|^)((?:/[\w\.\-]+)+/(?:[\w\.\-]+\.(?:png|jpg|jpeg|webp)))', output, re.IGNORECASE)
+    for m in matches:
+        exp = os.path.expanduser(m.strip())
+        if os.path.isfile(exp):
+            return exp
+
+    matches_home = re.findall(r'(?:[\'"]|(?<=\s)|^)(~/(?:[\w\.\-]+/)*(?:[\w\.\-]+\.(?:png|jpg|jpeg|webp)))', output, re.IGNORECASE)
+    for m in matches_home:
+        exp = os.path.expanduser(m.strip())
+        if os.path.isfile(exp):
+            return exp
+
+    return None
+
+async def deliver_response(update: Update, status_msg, reply_text: str, image_file: str | None = None):
+    if image_file and os.path.isfile(image_file):
+        print(f"[Telegram Bot] Delivering image to chat: {image_file}", flush=True)
+        caption = reply_text[:1024] if reply_text else None
+        try:
+            with open(image_file, "rb") as photo_f:
+                await update.message.reply_photo(photo=photo_f, caption=caption)
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            if reply_text and len(reply_text) > 1024:
+                rem = reply_text[1024:]
+                for i in range(0, len(rem), 4000):
+                    await update.message.reply_text(rem[i:i+4000])
+            return
+        except Exception as e:
+            print(f"[Telegram Bot] Failed to send photo: {e}", flush=True)
+
+    if len(reply_text) > 4000:
+        chunks = [reply_text[i:i+4000] for i in range(0, len(reply_text), 4000)]
+        await status_msg.edit_text(chunks[0])
+        for ch in chunks[1:]:
+            await update.message.reply_text(ch)
+    else:
+        await status_msg.edit_text(reply_text)
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -108,14 +165,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 add_message(session_id, "user", user_prompt)
                 add_message(session_id, "assistant", final["text"])
-                reply = final["text"]
-                if len(reply) > 4000:
-                    chunks = [reply[i:i+4000] for i in range(0, len(reply), 4000)]
-                    await status_msg.edit_text(chunks[0])
-                    for ch in chunks[1:]:
-                        await update.message.reply_text(ch)
-                else:
-                    await status_msg.edit_text(reply)
+                image_file = extract_image_from_tool_output(output)
+                await deliver_response(update, status_msg, final["text"], image_file)
                 return
             else:
                 action = "MAKE_TOOL"
@@ -139,13 +190,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 add_message(session_id, "user", user_prompt)
                 add_message(session_id, "assistant", final["text"])
                 reply_text = f"{final['text']}\n\n*(Created tool: `{t_name}.py`)*"
-                if len(reply_text) > 4000:
-                    chunks = [reply_text[i:i+4000] for i in range(0, len(reply_text), 4000)]
-                    await status_msg.edit_text(chunks[0], parse_mode="Markdown")
-                    for ch in chunks[1:]:
-                        await update.message.reply_text(ch)
-                else:
-                    await status_msg.edit_text(reply_text, parse_mode="Markdown")
+                image_file = extract_image_from_tool_output(build_res["output"])
+                await deliver_response(update, status_msg, reply_text, image_file)
             else:
                 await status_msg.edit_text(f"❌ Tool build failed:\n`{build_res['output']}`", parse_mode="Markdown")
             return
@@ -154,14 +200,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ans = await generate("chat", user_prompt, system=SYNTHESIS_SYSTEM_PROMPT, history=get_history(session_id, limit=10))
         add_message(session_id, "user", user_prompt)
         add_message(session_id, "assistant", ans["text"])
-        reply = ans["text"]
-        if len(reply) > 4000:
-            chunks = [reply[i:i+4000] for i in range(0, len(reply), 4000)]
-            await status_msg.edit_text(chunks[0])
-            for ch in chunks[1:]:
-                await update.message.reply_text(ch)
-        else:
-            await status_msg.edit_text(reply)
+        await deliver_response(update, status_msg, ans["text"])
 
     except Exception as e:
         print(f"[Telegram Bot] Message error: {e}", flush=True)

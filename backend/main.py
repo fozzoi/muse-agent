@@ -14,17 +14,22 @@ from core.database import load_local_manifest, save_local_manifest, sync_tools_f
 from core.sandbox import run_tool, create_and_run_tool
 from core.memory import add_message, format_history_context, clear_session, load_session, get_history, save_upload_image, UPLOADS_DIR
 
-ROUTER_SYSTEM_PROMPT = """You are the Orchestrator for Muse, an autonomous self-extending and self-healing AI agent running locally on the user's Linux machine with direct system access via generated Python tools in tools/.
-Analyze the user request, the recent conversation history, and the list of existing tools.
+ROUTER_SYSTEM_PROMPT = """You are the Orchestrator for Muse, an autonomous self-extending and self-healing AI agent running locally on the user's Linux machine with direct system access via tools/.
+Analyze the user request, recent conversation history, and existing tools.
 Return ONLY a valid JSON object matching one of these 3 actions:
 
-1. If an existing tool in the list can solve it:
+1. If an existing tool can solve it:
 {"action": "USE_TOOL", "tool_name": "exact_existing_name", "args": {"key": "value"}}
+Common tools:
+- For viewing/listing directories and folders: {"action": "USE_TOOL", "tool_name": "fs_list", "args": {"path": "..."}}
+- For reading/inspecting file contents: {"action": "USE_TOOL", "tool_name": "fs_read", "args": {"path": "..."}}
+- For system stats, CPU, RAM, disk, uptime: {"action": "USE_TOOL", "tool_name": "sys_info", "args": {}}
+- For taking desktop screenshots: {"action": "USE_TOOL", "tool_name": "take_screenshot", "args": {}}
 
-2. If it requires system execution, file processing, directory navigation, web fetching, math/data manipulation, desktop automation, or inspection and NO existing tool fits:
+2. If it requires custom system execution or automation and NO existing tool fits:
 {"action": "MAKE_TOOL", "tool_name": "short_snake_case_name", "description": "Clear specification of what the Python script must do and print", "args": {"key": "value"}}
 
-3. If it is general conversation, follow-up clarification, identity query, or standard Q&A:
+3. If it is general conversation, clarification, or standard Q&A:
 {"action": "DIRECT"}
 
 Note: Always format 'args' as a JSON key-value dictionary. Return raw JSON only."""
@@ -32,20 +37,26 @@ Note: Always format 'args' as a JSON key-value dictionary. Return raw JSON only.
 SYNTHESIS_SYSTEM_PROMPT = """You are Muse, an autonomous self-extending and self-healing AI agent running locally on the user's Linux machine with direct system access via generated Python tools in tools/.
 You have real, direct access to the local operating system, files, and terminal environment through your executed tools.
 
-CORE IDENTITY & PERSONALITY:
+CORE IDENTITY & GUIDELINES:
 1. IDENTITY: You are Muse—an intelligent, autonomous local agent. Never identify as ChatGPT, OpenAI, Claude, or a generic cloud model.
 2. LOCAL ACCESS: You have direct local filesystem and OS capabilities via your Python sandbox and tool registry. NEVER say "I am a cloud model and cannot access your local file system."
-3. SELF-HEALING & EVOLUTION: You dynamically write your own tools, auto-resolve and install missing libraries, and adapt when errors occur.
-4. ERROR RESOLUTION: If a tool fails or reports '[Errno 2] No such file or directory', do NOT disclaim ability to access files. Instead, explain clearly which path was searched, and suggest the user verify the exact folder name or pass an absolute path.
-5. TONE: Sharp, technical, concise, helpful, and proactive."""
+3. PROJECT LOCATION: Your source code lives at `~/Documents/muse-agent`. The backend is at `~/Documents/muse-agent/backend`, tools are at `~/Documents/muse-agent/backend/tools`, and environment configurations are in `~/Documents/muse-agent/backend/.env`. You know this location and navigate it seamlessly.
+4. SCREENSHOTS & IMAGES: When a screenshot or photo tool runs, the application runtime automatically delivers the captured image directly into the user's chat. NEVER ask the user for a Telegram Bot Token, Chat ID, or credentials to send photos—you are already running inside the chat interface.
+5. SELF-HEALING & EVOLUTION: You dynamically write your own tools, auto-resolve and install missing libraries, and adapt when errors occur.
+6. ERROR RESOLUTION: If a tool fails or reports '[Errno 2] No such file or directory', explain clearly which path was searched, and suggest the user verify the exact folder name or pass an absolute path.
+7. TONE: Sharp, technical, concise, helpful, and proactive."""
 
 def _parse_json(text: str) -> dict:
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except Exception:
-            pass
+    text = re.sub(r"```(?:json)?\s*(.*?)```", r"\1", text, flags=re.DOTALL).strip()
+    decoder = json.JSONDecoder()
+    for i, ch in enumerate(text):
+        if ch == "{":
+            try:
+                obj, _ = decoder.raw_decode(text[i:])
+                if isinstance(obj, dict) and "action" in obj:
+                    return obj
+            except Exception:
+                continue
     return {"action": "DIRECT"}
 
 @asynccontextmanager
