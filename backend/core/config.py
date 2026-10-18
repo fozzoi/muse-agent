@@ -11,6 +11,11 @@ class Config:
     MONGO_URI = os.getenv("MONGO_URI", "")
     TOOLS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools")
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    TELEGRAM_ALLOWED_USERS = [
+        u.strip().lower()
+        for u in os.getenv("TELEGRAM_ALLOWED_USERS", "").split(",")
+        if u.strip()
+    ]
     E2B_API_KEY = os.getenv("E2B_API_KEY", "")
 
 os.makedirs(Config.TOOLS_DIR, exist_ok=True)

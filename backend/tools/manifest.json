@@ -19,5 +19,11 @@
   },
   "take_screenshot": {
     "description": "Captures a screenshot of the user's desktop display and saves it to ~/Pictures/Screenshots or a specified path."
+  },
+  "take_screenshot_auto_install": {
+    "description": "Captures a screenshot of the user's desktop display, automatically installing pyscreenshot if not present, and saves it to ~/Pictures/Screenshots or a specified path."
+  },
+  "read_file_content": {
+    "description": "Read the content of a specified file path and print it as plain text."
   }
 }

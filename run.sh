@@ -29,7 +29,7 @@ echo "Web client running on http://localhost:5173"
 
 # 3. Start Telegram Bot
 cd "$ROOT_DIR/backend" || exit 1
-python3 bot.py &
+"$ROOT_DIR/backend/venv/bin/python3" bot.py &
 BOT_PID=$!
 echo "Telegram Bot running in background"
 

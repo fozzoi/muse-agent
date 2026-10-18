@@ -23,11 +23,43 @@ IMAGE_FILTER = (
     | filters.Document.FileExtension("webp")
 )
 
+async def is_authorized(update: Update) -> bool:
+    """Verifies if the sending Telegram user is authorized to interact with Muse."""
+    allowed = Config.TELEGRAM_ALLOWED_USERS
+    if not allowed:
+        return True
+
+    user = update.effective_user
+    if not user:
+        return False
+
+    user_id = str(user.id).strip().lower()
+    username = (user.username or "").strip().lower().lstrip("@")
+
+    if user_id in allowed or username in allowed:
+        return True
+
+    u_display = f"@{user.username}" if user.username else f"User {user.id}"
+    print(f"[Telegram Bot] ⛔ Unauthorized access denied for {u_display} (ID: {user.id})", flush=True)
+    if update.message:
+        await update.message.reply_text(
+            f"⛔ *Access Denied*\n\n"
+            f"Your Telegram User ID is: `{user.id}`\n\n"
+            f"For security, Muse Agent has direct local execution access on the host Linux system and is restricted to authorized users.\n\n"
+            f"To authorize this account, add `{user.id}` to `TELEGRAM_ALLOWED_USERS` in your backend `.env` file.",
+            parse_mode="Markdown",
+        )
+    return False
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
     print(f"[Telegram Bot] /start from {update.effective_chat.id}", flush=True)
     await update.message.reply_text("Muse Agent is online. Send me any task, question, or send a photo for AI vision analysis! Send /clear to reset memory.")
 
 async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_authorized(update):
+        return
     chat_id = str(update.effective_chat.id)
     print(f"[Telegram Bot] /clear from {chat_id}", flush=True)
     clear_session(f"tg_{chat_id}")
@@ -35,6 +67,9 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
+        return
+
+    if not await is_authorized(update):
         return
 
     chat_id = str(update.effective_chat.id)
@@ -137,6 +172,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
+        return
+
+    if not await is_authorized(update):
         return
 
     chat_id = str(update.effective_chat.id)
