@@ -4,6 +4,7 @@ import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -11,7 +12,7 @@ from core.config import Config
 from core.router import generate
 from core.database import load_local_manifest, save_local_manifest, sync_tools_from_cloud
 from core.sandbox import run_tool, create_and_run_tool
-from core.memory import add_message, format_history_context, clear_session, load_session, get_history
+from core.memory import add_message, format_history_context, clear_session, load_session, get_history, save_upload_image, UPLOADS_DIR
 
 ROUTER_SYSTEM_PROMPT = """You are the Orchestrator for a self-extending AI agent.
 Analyze the user request, the recent conversation history, and the list of existing tools.
@@ -51,6 +52,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.mount("/api/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
 
 @app.get("/health")
 def health():
@@ -111,7 +114,8 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                     mime_type=mime_type or "image/jpeg",
                     history=get_history(session, limit=6),
                 )
-                add_message(session, "user", f"[Image attached] {vision_prompt}")
+                image_url = save_upload_image(image, mime_type or "image/jpeg")
+                add_message(session, "user", vision_prompt, extra={"image": image_url} if image_url else None)
                 add_message(session, "assistant", final["text"])
                 yield {
                     "event": "result",

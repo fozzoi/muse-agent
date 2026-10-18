@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowUp, ChevronRight, ImageIcon, Sparkles, Square, TerminalSquare, TriangleAlert, Wrench, X } from "lucide-react";
 import TraceViewer from "./TraceViewer";
+import { API } from "../lib/api";
 
 const SUGGESTIONS = ["Check root disk space", "Print system specs", "Fetch current memory usage"];
 
@@ -55,19 +56,32 @@ function RawDrawer({ raw }) {
   );
 }
 
+function cleanMessageText(text) {
+  if (typeof text === "string" && text.startsWith("[Image attached] ")) {
+    return text.slice(17);
+  }
+  return text;
+}
+
 function Message({ m }) {
   if (m.role === "user") {
+    const imgSrc = m.image
+      ? m.image.startsWith("http") || m.image.startsWith("data:")
+        ? m.image
+        : `${API}${m.image}`
+      : null;
+
     return (
       <div className="flex justify-end animate-fade-in">
         <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-indigo-500/20 px-4 py-2.5 text-[15px] text-zinc-100 ring-1 ring-inset ring-indigo-400/20">
-          {m.image && (
+          {imgSrc && (
             <img
-              src={m.image}
+              src={imgSrc}
               alt="Uploaded thumbnail"
               className="mb-2 max-h-60 rounded-xl object-contain border border-white/10"
             />
           )}
-          {m.text}
+          {cleanMessageText(m.text)}
         </div>
       </div>
     );

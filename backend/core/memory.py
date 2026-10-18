@@ -1,9 +1,32 @@
 import os
 import json
+import base64
+import uuid
+import mimetypes
 from pathlib import Path
 
 MEMORY_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "sessions")
+UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads")
 os.makedirs(MEMORY_DIR, exist_ok=True)
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+def save_upload_image(b64_data: str, mime_type: str = "image/jpeg") -> str:
+    """Decodes and stores an uploaded image, returning its relative API path."""
+    try:
+        if "," in b64_data:
+            b64_data = b64_data.split(",", 1)[1]
+        ext = mimetypes.guess_extension(mime_type) or ".jpg"
+        if ext in (".jpe", ".jpeg"):
+            ext = ".jpg"
+        filename = f"{uuid.uuid4().hex[:12]}{ext}"
+        filepath = os.path.join(UPLOADS_DIR, filename)
+        img_bytes = base64.b64decode(b64_data)
+        with open(filepath, "wb") as f:
+            f.write(img_bytes)
+        return f"/api/uploads/{filename}"
+    except Exception as e:
+        print(f"[Memory Warning] Could not save upload image: {e}")
+        return ""
 
 def _get_session_file(session_id: str) -> str:
     safe_id = "".join(c for c in session_id if c.isalnum() or c in ("-", "_")) or "default"

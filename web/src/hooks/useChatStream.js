@@ -205,6 +205,7 @@ export function useChatStream({ onToolCreated } = {}) {
             id: `hist-${idx}-${Date.now()}`,
             role: msg.role,
             text: msg.content,
+            image: msg.image || null,
             status: "done",
             steps: [],
           }))

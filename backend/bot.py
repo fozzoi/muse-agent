@@ -11,21 +11,36 @@ from core.config import Config
 from core.router import generate
 from core.database import load_local_manifest
 from core.sandbox import run_tool, create_and_run_tool
-from core.memory import add_message, format_history_context, clear_session, get_history
+from core.memory import add_message, format_history_context, clear_session, get_history, save_upload_image
 from main import ROUTER_SYSTEM_PROMPT, _parse_json
 
+IMAGE_FILTER = (
+    filters.PHOTO
+    | filters.Document.IMAGE
+    | filters.Document.FileExtension("png")
+    | filters.Document.FileExtension("jpg")
+    | filters.Document.FileExtension("jpeg")
+    | filters.Document.FileExtension("webp")
+)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    print(f"[Telegram Bot] /start from {update.effective_chat.id}", flush=True)
     await update.message.reply_text("Muse Agent is online. Send me any task, question, or send a photo for AI vision analysis! Send /clear to reset memory.")
 
 async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
+    print(f"[Telegram Bot] /clear from {chat_id}", flush=True)
     clear_session(f"tg_{chat_id}")
     await update.message.reply_text("🧹 Conversation memory cleared!")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
     chat_id = str(update.effective_chat.id)
     session_id = f"tg_{chat_id}"
     user_prompt = update.message.text
+    print(f"[Telegram Bot] Received text from {chat_id}: {user_prompt[:80]}", flush=True)
     status_msg = await update.message.reply_text("🤔 Routing request...")
 
     try:
@@ -57,7 +72,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 add_message(session_id, "user", user_prompt)
                 add_message(session_id, "assistant", final["text"])
-                await status_msg.edit_text(final["text"])
+                reply = final["text"]
+                if len(reply) > 4000:
+                    chunks = [reply[i:i+4000] for i in range(0, len(reply), 4000)]
+                    await status_msg.edit_text(chunks[0])
+                    for ch in chunks[1:]:
+                        await update.message.reply_text(ch)
+                else:
+                    await status_msg.edit_text(reply)
                 return
             else:
                 action = "MAKE_TOOL"
@@ -80,7 +102,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 add_message(session_id, "user", user_prompt)
                 add_message(session_id, "assistant", final["text"])
                 reply_text = f"{final['text']}\n\n*(Created tool: `{t_name}.py`)*"
-                await status_msg.edit_text(reply_text, parse_mode="Markdown")
+                if len(reply_text) > 4000:
+                    chunks = [reply_text[i:i+4000] for i in range(0, len(reply_text), 4000)]
+                    await status_msg.edit_text(chunks[0], parse_mode="Markdown")
+                    for ch in chunks[1:]:
+                        await update.message.reply_text(ch)
+                else:
+                    await status_msg.edit_text(reply_text, parse_mode="Markdown")
             else:
                 await status_msg.edit_text(f"❌ Tool build failed:\n`{build_res['output']}`", parse_mode="Markdown")
             return
@@ -89,24 +117,53 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ans = await generate("chat", user_prompt, history=get_history(session_id, limit=10))
         add_message(session_id, "user", user_prompt)
         add_message(session_id, "assistant", ans["text"])
-        await status_msg.edit_text(ans["text"])
+        reply = ans["text"]
+        if len(reply) > 4000:
+            chunks = [reply[i:i+4000] for i in range(0, len(reply), 4000)]
+            await status_msg.edit_text(chunks[0])
+            for ch in chunks[1:]:
+                await update.message.reply_text(ch)
+        else:
+            await status_msg.edit_text(reply)
 
     except Exception as e:
-        await status_msg.edit_text(f"⚠️ Error: {str(e)}")
+        print(f"[Telegram Bot] Message error: {e}", flush=True)
+        try:
+            await status_msg.edit_text(f"⚠️ Error: {str(e)}")
+        except Exception:
+            await update.message.reply_text(f"⚠️ Error: {str(e)}")
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.photo:
+    if not update.message:
         return
 
     chat_id = str(update.effective_chat.id)
     session_id = f"tg_{chat_id}"
     caption = update.message.caption or "Analyze this image and describe what you see in detail."
+
+    photo_file = None
+    mime_type = "image/jpeg"
+
+    if update.message.photo:
+        photo = update.message.photo[-1]
+        photo_file = await photo.get_file()
+        mime_type = "image/jpeg"
+    elif update.message.document:
+        doc = update.message.document
+        doc_mime = doc.mime_type or ""
+        doc_name = (doc.file_name or "").lower()
+        if doc_mime.startswith("image/") or doc_name.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")):
+            photo_file = await doc.get_file()
+            mime_type = doc_mime if doc_mime.startswith("image/") else "image/jpeg"
+        else:
+            return
+    else:
+        return
+
+    print(f"[Telegram Bot] Processing vision request from chat {chat_id} (mime: {mime_type}, caption: {caption[:50]!r})", flush=True)
     status_msg = await update.message.reply_text("🔍 Analyzing image with Muse Vision...")
 
     try:
-        # Download highest-resolution photo
-        photo = update.message.photo[-1]
-        photo_file = await photo.get_file()
         photo_bytes = await photo_file.download_as_bytearray()
         b64_image = base64.b64encode(photo_bytes).decode("utf-8")
 
@@ -115,22 +172,33 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt=caption,
             system="You are an expert AI vision analyst. Inspect the image closely and provide clear, accurate, and structured observations.",
             image_data=b64_image,
-            mime_type="image/jpeg",
+            mime_type=mime_type,
             history=get_history(session_id, limit=6),
         )
 
-        add_message(session_id, "user", f"[Photo attached] {caption}")
+        image_url = save_upload_image(b64_image, mime_type)
+        add_message(session_id, "user", caption, extra={"image": image_url} if image_url else None)
         add_message(session_id, "assistant", res["text"])
 
         reply = f"{res['text']}\n\n*(Analyzed via `{res['provider']}/{res['model']}`)*"
-        await status_msg.edit_text(reply)
+        if len(reply) > 4000:
+            chunks = [reply[i:i+4000] for i in range(0, len(reply), 4000)]
+            await status_msg.edit_text(chunks[0])
+            for ch in chunks[1:]:
+                await update.message.reply_text(ch)
+        else:
+            await status_msg.edit_text(reply)
     except Exception as e:
-        await status_msg.edit_text(f"⚠️ Vision analysis error: {str(e)}")
+        print(f"[Telegram Bot] Vision analysis error: {e}", flush=True)
+        try:
+            await status_msg.edit_text(f"⚠️ Vision analysis error: {str(e)}")
+        except Exception:
+            await update.message.reply_text(f"⚠️ Vision analysis error: {str(e)}")
 
 def main():
     token = Config.TELEGRAM_BOT_TOKEN
     if not token:
-        print("[Telegram Bot] TELEGRAM_BOT_TOKEN not configured in .env. Exiting.")
+        print("[Telegram Bot] TELEGRAM_BOT_TOKEN not configured in .env. Exiting.", flush=True)
         return
 
     # Python 3.14 requirement: ensure an event loop is set for the main thread
@@ -142,19 +210,20 @@ def main():
 
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         if isinstance(context.error, telegram.error.NetworkError):
+            print(f"[Telegram Bot] Network glitch: {context.error}", flush=True)
             return
-        print(f"[Telegram Bot] Warning: {context.error}")
+        print(f"[Telegram Bot] Warning: {context.error}", flush=True)
 
     request = HTTPXRequest(connect_timeout=15.0, read_timeout=30.0)
     app = ApplicationBuilder().token(token).request(request).build()
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_chat))
+    app.add_handler(MessageHandler(IMAGE_FILTER, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
-    print("[Telegram Bot] Bot is polling for messages...")
-    app.run_polling(close_loop=False)
+    print("[Telegram Bot] Bot is polling for messages...", flush=True)
+    app.run_polling(close_loop=False, allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
 
 if __name__ == "__main__":
     main()
