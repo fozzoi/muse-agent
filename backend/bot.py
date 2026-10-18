@@ -1,5 +1,6 @@
 import os
 import re
+import html
 import json
 import base64
 import asyncio
@@ -13,7 +14,7 @@ from core.router import generate
 from core.database import load_local_manifest
 from core.sandbox import run_tool, create_and_run_tool
 from core.memory import add_message, format_history_context, clear_session, get_history, save_upload_image
-from main import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, _parse_json
+from main import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, _parse_json
 
 IMAGE_FILTER = (
     filters.PHOTO
@@ -95,32 +96,120 @@ def extract_image_from_tool_output(output: str) -> str | None:
 
     return None
 
+def markdown_to_telegram_html(md: str) -> str:
+    """Safely converts Markdown into Telegram-compatible HTML, converting tables and headers for mobile."""
+    if not md:
+        return ""
+
+    # 1. Protect multi-line code blocks
+    code_blocks = []
+    def save_code_block(match):
+        code = match.group(2)
+        escaped_code = html.escape(code.strip("\n"))
+        idx = len(code_blocks)
+        code_blocks.append(f"<pre><code>{escaped_code}</code></pre>")
+        return f"__CODE_BLOCK_{idx}__"
+
+    text = re.sub(r"```([a-zA-Z0-9_\-\+]*)\n(.*?)```", save_code_block, md, flags=re.DOTALL)
+
+    # 2. Protect inline code
+    inline_codes = []
+    def save_inline(match):
+        c = match.group(1)
+        idx = len(inline_codes)
+        inline_codes.append(f"<code>{html.escape(c)}</code>")
+        return f"__INLINE_CODE_{idx}__"
+
+    text = re.sub(r"`([^`\n]+)`", save_inline, text)
+
+    # 3. HTML escape remaining text
+    text = html.escape(text)
+
+    # 4. Convert markdown tables into clean bulleted list for mobile
+    lines = text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            if re.match(r"^\|[\s\-:|]+\|$", stripped):
+                continue
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            cleaned_lines.append("• " + " — ".join(c for c in cells if c))
+        else:
+            cleaned_lines.append(line)
+    text = "\n".join(cleaned_lines)
+
+    # 5. Convert Headers (#, ##, ###) into bold
+    text = re.sub(r"^(?:#{1,6})\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+
+    # 6. Convert Bold (**text**)
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+
+    # 7. Convert Italic (*text*)
+    text = re.sub(r"(?<!\w)\*([^\*\n]+)\*(?!\w)", r"<i>\1</i>", text)
+
+    # 8. Restore code blocks & inline code
+    for i, cb in enumerate(code_blocks):
+        text = text.replace(f"__CODE_BLOCK_{i}__", cb)
+    for i, ic in enumerate(inline_codes):
+        text = text.replace(f"__INLINE_CODE_{i}__", ic)
+
+    return text
+
 async def deliver_response(update: Update, status_msg, reply_text: str, image_file: str | None = None):
+    html_text = markdown_to_telegram_html(reply_text)
+
     if image_file and os.path.isfile(image_file):
         print(f"[Telegram Bot] Delivering image to chat: {image_file}", flush=True)
-        caption = reply_text[:1024] if reply_text else None
+        caption_html = html_text[:1024] if html_text else None
+        caption_plain = reply_text[:1024] if reply_text else None
+        sent_photo = False
         try:
             with open(image_file, "rb") as photo_f:
-                await update.message.reply_photo(photo=photo_f, caption=caption)
+                await update.message.reply_photo(photo=photo_f, caption=caption_html, parse_mode="HTML")
+            sent_photo = True
+        except Exception:
+            try:
+                with open(image_file, "rb") as photo_f:
+                    await update.message.reply_photo(photo=photo_f, caption=caption_plain)
+                sent_photo = True
+            except Exception as e:
+                print(f"[Telegram Bot] Failed to send photo: {e}", flush=True)
+
+        if sent_photo:
             try:
                 await status_msg.delete()
             except Exception:
                 pass
-            if reply_text and len(reply_text) > 1024:
-                rem = reply_text[1024:]
-                for i in range(0, len(rem), 4000):
-                    await update.message.reply_text(rem[i:i+4000])
+            if len(html_text) > 1024:
+                rem_html = html_text[1024:]
+                rem_plain = reply_text[1024:]
+                for i in range(0, len(rem_html), 4000):
+                    try:
+                        await update.message.reply_text(rem_html[i:i+4000], parse_mode="HTML")
+                    except Exception:
+                        await update.message.reply_text(rem_plain[i:i+4000])
             return
-        except Exception as e:
-            print(f"[Telegram Bot] Failed to send photo: {e}", flush=True)
 
-    if len(reply_text) > 4000:
-        chunks = [reply_text[i:i+4000] for i in range(0, len(reply_text), 4000)]
-        await status_msg.edit_text(chunks[0])
-        for ch in chunks[1:]:
-            await update.message.reply_text(ch)
+    # Text delivery with HTML parsing and plain-text fallback
+    if len(html_text) > 4000:
+        chunks_html = [html_text[i:i+4000] for i in range(0, len(html_text), 4000)]
+        chunks_plain = [reply_text[i:i+4000] for i in range(0, len(reply_text), 4000)]
+        try:
+            await status_msg.edit_text(chunks_html[0], parse_mode="HTML")
+        except Exception:
+            await status_msg.edit_text(chunks_plain[0])
+
+        for ch_h, ch_p in zip(chunks_html[1:], chunks_plain[1:]):
+            try:
+                await update.message.reply_text(ch_h, parse_mode="HTML")
+            except Exception:
+                await update.message.reply_text(ch_p)
     else:
-        await status_msg.edit_text(reply_text)
+        try:
+            await status_msg.edit_text(html_text, parse_mode="HTML")
+        except Exception:
+            await status_msg.edit_text(reply_text)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -159,8 +248,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if success:
                 final = await generate(
                     "chat",
-                    f"Tool '{t_name}' returned:\n{output}\nSummarize clearly.",
-                    system=SYNTHESIS_SYSTEM_PROMPT,
+                    f"Tool '{t_name}' returned:\n{output}\nSummarize clearly for the user on Telegram.",
+                    system=TELEGRAM_SYNTHESIS_SYSTEM_PROMPT,
                     history=get_history(session_id, limit=10),
                 )
                 add_message(session_id, "user", user_prompt)
@@ -183,8 +272,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await status_msg.edit_text(" Formatting final response...")
                 final = await generate(
                     "chat",
-                    f"Newly created tool '{t_name}' produced:\n{build_res['output']}\nProvide final answer.",
-                    system=SYNTHESIS_SYSTEM_PROMPT,
+                    f"Newly created tool '{t_name}' produced:\n{build_res['output']}\nProvide final answer for Telegram.",
+                    system=TELEGRAM_SYNTHESIS_SYSTEM_PROMPT,
                     history=get_history(session_id, limit=10),
                 )
                 add_message(session_id, "user", user_prompt)
@@ -197,7 +286,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # 4. Direct Response with memory
-        ans = await generate("chat", user_prompt, system=SYNTHESIS_SYSTEM_PROMPT, history=get_history(session_id, limit=10))
+        ans = await generate("chat", user_prompt, system=TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, history=get_history(session_id, limit=10))
         add_message(session_id, "user", user_prompt)
         add_message(session_id, "assistant", ans["text"])
         await deliver_response(update, status_msg, ans["text"])
@@ -249,7 +338,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         res = await generate(
             "vision",
             prompt=caption,
-            system="You are an expert AI vision analyst. Inspect the image closely and provide clear, accurate, and structured observations.",
+            system="You are Muse Vision, an expert visual analyst chatting on Telegram mobile. Provide clear, concise observations using emoji bullet points. Do not use Markdown tables.",
             image_data=b64_image,
             mime_type=mime_type,
             history=get_history(session_id, limit=6),
@@ -260,13 +349,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         add_message(session_id, "assistant", res["text"])
 
         reply = f"{res['text']}\n\n*(Analyzed via `{res['provider']}/{res['model']}`)*"
-        if len(reply) > 4000:
-            chunks = [reply[i:i+4000] for i in range(0, len(reply), 4000)]
-            await status_msg.edit_text(chunks[0])
-            for ch in chunks[1:]:
-                await update.message.reply_text(ch)
-        else:
-            await status_msg.edit_text(reply)
+        await deliver_response(update, status_msg, reply)
     except Exception as e:
         print(f"[Telegram Bot] Vision analysis error: {e}", flush=True)
         try:
@@ -293,7 +376,7 @@ def main():
             return
         print(f"[Telegram Bot] Warning: {context.error}", flush=True)
 
-    request = HTTPXRequest(connect_timeout=15.0, read_timeout=30.0)
+    request = HTTPXRequest(connect_timeout=30.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=60.0)
     app = ApplicationBuilder().token(token).request(request).build()
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start))
