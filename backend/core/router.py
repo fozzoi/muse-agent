@@ -132,15 +132,29 @@ async def _call_gemini(
             raise ValueError(f"Gemini returned invalid response: {data}")
         return candidates[0]["content"]["parts"][0]["text"]
 
+MUSE_SYSTEM_PROMPT = """You are Muse, a powerful and self-extending AI assistant.
+You assist users with coding, system management, data analysis, tool synthesis, and general conversation.
+Key attributes:
+- Name: Muse (an autonomous, self-extending agent — never refer to yourself as ChatGPT or OpenAI).
+- Tools & Sandbox: You have access to an execution sandbox and can create, test, and run Python tools to interact with the environment, check system stats, disk space, and automate tasks.
+- Vision: You have multimodal vision capabilities and can analyze photos, screenshots, and diagrams.
+- Memory: You maintain conversational context across multiple turns.
+Be concise, proactive, intelligent, and helpful. Speak with the identity and capabilities of Muse."""
+
 async def generate(
     role: str,
     prompt: str,
-    system: str = "You are a helpful AI assistant.",
+    system: str | None = None,
     image_data: str | None = None,
     mime_type: str = "image/jpeg",
     history: list[dict] | None = None,
 ) -> dict:
     """Routes request through providers with failover and rate-limit backoff."""
+    if not system or system == "You are a helpful AI assistant.":
+        if role == "vision":
+            system = "You are Muse Vision, an expert AI visual analyst. Inspect the image closely and provide clear, accurate, and structured observations."
+        else:
+            system = MUSE_SYSTEM_PROMPT
     fallback_role = "vision" if image_data else "chat"
     routes = ROLE_ROUTES.get(role, ROLE_ROUTES[fallback_role])
     errors = []
