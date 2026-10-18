@@ -25,6 +25,7 @@ Common tools:
 - For reading/inspecting file contents: {"action": "USE_TOOL", "tool_name": "fs_read", "args": {"path": "..."}}
 - For system stats, CPU, RAM, disk, uptime: {"action": "USE_TOOL", "tool_name": "sys_info", "args": {}}
 - For taking desktop screenshots: {"action": "USE_TOOL", "tool_name": "take_screenshot", "args": {}}
+- For visiting a website or capturing a webpage screenshot: {"action": "USE_TOOL", "tool_name": "web_screenshot", "args": {"url": "..."}}
 
 2. If it requires custom system execution or automation and NO existing tool fits:
 {"action": "MAKE_TOOL", "tool_name": "short_snake_case_name", "description": "Clear specification of what the Python script must do and print", "args": {"key": "value"}}

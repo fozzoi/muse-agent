@@ -10,5 +10,20 @@
   },
   "take_screenshot": {
     "description": "Captures a desktop screenshot and saves it as an image file. The runtime automatically sends the captured photo to the user."
+  },
+  "web_screenshot": {
+    "description": "Visits a website URL and captures a screenshot of the webpage using headless browser. The runtime automatically sends the captured photo to the user."
+  },
+  "install_tesseract_ocr": {
+    "description": "Installs Tesseract OCR on the system using apt-get, with sudo and password."
+  },
+  "run_tesseract_ocr": {
+    "description": "Run tesseract OCR on a given image file and output extracted text"
+  },
+  "list_flatpak_apps": {
+    "description": "Run the command `flatpak list --app --columns=application,branch,version,installed` to retrieve a list of all installed Flatpak applications on the system and print the output to the console."
+  },
+  "open_zen_browser": {
+    "description": "Run the command to launch Zen Browser via Flatpak: `flatpak run app.zen_browser.zen`. The tool should execute the command and print any output or errors."
   }
 }
