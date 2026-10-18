@@ -23,6 +23,10 @@ ROLE_ROUTES = {
         ("gemini", "gemini-2.5-flash-lite"),
         ("openrouter", "openrouter/free"),
     ],
+    "vision": [
+        ("gemini", "gemini-2.5-flash-lite"),
+        ("openrouter", "openrouter/free"),
+    ],
     "heavy": [
         ("groq", "openai/gpt-oss-120b"),
         ("mistral", "codestral-latest"),
@@ -30,32 +34,62 @@ ROLE_ROUTES = {
     ],
 }
 
-async def _call_openai_compatible(url: str, api_key: str, model: str, prompt: str, system: str) -> str:
+async def _call_openai_compatible(
+    url: str,
+    api_key: str,
+    model: str,
+    prompt: str,
+    system: str,
+    image_data: str | None = None,
+    mime_type: str = "image/jpeg",
+) -> str:
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    if image_data:
+        user_content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_data}"}},
+        ]
+    else:
+        user_content = prompt
+
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": user_content},
         ],
         "temperature": 0.2,
     }
-    async with httpx.AsyncClient(timeout=25.0) as client:
+    async with httpx.AsyncClient(timeout=35.0) as client:
         resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
 
-async def _call_gemini(model: str, prompt: str, system: str) -> str:
+async def _call_gemini(
+    model: str,
+    prompt: str,
+    system: str,
+    image_data: str | None = None,
+    mime_type: str = "image/jpeg",
+) -> str:
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={Config.GEMINI_API_KEY}"
+    parts = [{"text": prompt}]
+    if image_data:
+        parts.append({
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": image_data,
+            }
+        })
     payload = {
         "system_instruction": {"parts": [{"text": system}]},
-        "contents": [{"parts": [{"text": prompt}]}],
+        "contents": [{"parts": parts}],
         "generationConfig": {"temperature": 0.2},
     }
-    async with httpx.AsyncClient(timeout=25.0) as client:
+    async with httpx.AsyncClient(timeout=35.0) as client:
         resp = await client.post(url, json=payload)
         resp.raise_for_status()
         data = resp.json()
@@ -64,16 +98,25 @@ async def _call_gemini(model: str, prompt: str, system: str) -> str:
             raise ValueError(f"Gemini returned invalid response: {data}")
         return candidates[0]["content"]["parts"][0]["text"]
 
-async def generate(role: str, prompt: str, system: str = "You are a helpful AI assistant.") -> dict:
+async def generate(
+    role: str,
+    prompt: str,
+    system: str = "You are a helpful AI assistant.",
+    image_data: str | None = None,
+    mime_type: str = "image/jpeg",
+) -> dict:
     """Routes request through providers with failover and rate-limit backoff."""
-    routes = ROLE_ROUTES.get(role, ROLE_ROUTES["chat"])
+    fallback_role = "vision" if image_data else "chat"
+    routes = ROLE_ROUTES.get(role, ROLE_ROUTES[fallback_role])
     errors = []
 
     for provider, model in routes:
         for attempt in range(2):  # Quick 1-second retry on transient 429s
             try:
-                # 1. Groq
+                # 1. Groq (skip vision calls unless model supports it)
                 if provider == "groq" and Config.GROQ_API_KEY and not Config.GROQ_API_KEY.startswith("gsk_your"):
+                    if image_data:
+                        break  # Groq text models don't take image payloads
                     text = await _call_openai_compatible(
                         "https://api.groq.com/openai/v1/chat/completions",
                         Config.GROQ_API_KEY,
@@ -83,13 +126,15 @@ async def generate(role: str, prompt: str, system: str = "You are a helpful AI a
                     )
                     return {"text": text, "provider": provider, "model": model}
 
-                # 2. Gemini
+                # 2. Gemini (multimodal native)
                 elif provider == "gemini" and Config.GEMINI_API_KEY and not Config.GEMINI_API_KEY.startswith("AIza_your"):
-                    text = await _call_gemini(model, prompt, system)
+                    text = await _call_gemini(model, prompt, system, image_data=image_data, mime_type=mime_type)
                     return {"text": text, "provider": provider, "model": model}
 
                 # 3. Mistral
                 elif provider == "mistral" and Config.MISTRAL_API_KEY and not Config.MISTRAL_API_KEY.startswith("mstrl_your"):
+                    if image_data:
+                        break
                     text = await _call_openai_compatible(
                         "https://api.mistral.ai/v1/chat/completions",
                         Config.MISTRAL_API_KEY,
@@ -99,7 +144,7 @@ async def generate(role: str, prompt: str, system: str = "You are a helpful AI a
                     )
                     return {"text": text, "provider": provider, "model": model}
 
-                # 4. OpenRouter Free Fallback
+                # 4. OpenRouter Free Fallback (multimodal supported)
                 elif provider == "openrouter" and Config.OPENROUTER_API_KEY and not Config.OPENROUTER_API_KEY.startswith("sk-or-your"):
                     text = await _call_openai_compatible(
                         "https://openrouter.ai/api/v1/chat/completions",
@@ -107,6 +152,8 @@ async def generate(role: str, prompt: str, system: str = "You are a helpful AI a
                         model,
                         prompt,
                         system,
+                        image_data=image_data,
+                        mime_type=mime_type,
                     )
                     return {"text": text, "provider": provider, "model": model}
 

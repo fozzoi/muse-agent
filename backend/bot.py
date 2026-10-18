@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import asyncio
 from telegram import Update
 import telegram.error
@@ -13,7 +14,7 @@ from core.sandbox import run_tool, create_and_run_tool
 from main import ROUTER_SYSTEM_PROMPT, _parse_json
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Muse Agent is online. Send me any task or question!")
+    await update.message.reply_text("Muse Agent is online. Send me any task, question, or send a photo for AI vision analysis!")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_prompt = update.message.text
@@ -75,6 +76,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await status_msg.edit_text(f"⚠️ Error: {str(e)}")
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.photo:
+        return
+
+    caption = update.message.caption or "Analyze this image and describe what you see in detail."
+    status_msg = await update.message.reply_text("🔍 Analyzing image with Muse Vision...")
+
+    try:
+        # Download highest-resolution photo
+        photo = update.message.photo[-1]
+        photo_file = await photo.get_file()
+        photo_bytes = await photo_file.download_as_bytearray()
+        b64_image = base64.b64encode(photo_bytes).decode("utf-8")
+
+        res = await generate(
+            "vision",
+            prompt=caption,
+            system="You are an expert AI vision analyst. Inspect the image closely and provide clear, accurate, and structured observations.",
+            image_data=b64_image,
+            mime_type="image/jpeg",
+        )
+
+        reply = f"{res['text']}\n\n*(Analyzed via `{res['provider']}/{res['model']}`)*"
+        await status_msg.edit_text(reply)
+    except Exception as e:
+        await status_msg.edit_text(f"⚠️ Vision analysis error: {str(e)}")
+
 def main():
     token = Config.TELEGRAM_BOT_TOKEN
     if not token:
@@ -98,6 +126,7 @@ def main():
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
     print("[Telegram Bot] Bot is polling for messages...")
     app.run_polling(close_loop=False)

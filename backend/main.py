@@ -4,6 +4,7 @@ import json
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from core.config import Config
@@ -93,17 +94,44 @@ def clear_history():
     CHAT_HISTORY = []
     return {"status": "cleared"}
 
-@app.get("/api/chat/stream")
-async def chat_stream(prompt: str):
+class ChatRequest(BaseModel):
+    prompt: str = ""
+    image: str | None = None
+    mime_type: str | None = "image/jpeg"
+
+async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "image/jpeg"):
     async def event_generator():
         global CHAT_HISTORY
         try:
+            # 1. Vision mode: image analysis
+            if image:
+                yield {"event": "status", "data": json.dumps({"step": "Analyzing image with Muse Vision..."})}
+                vision_prompt = prompt.strip() or "Analyze this image and describe what you see in detail."
+                final = await generate(
+                    "vision",
+                    vision_prompt,
+                    system="You are an expert AI vision analyst. Inspect the image closely and provide clear, accurate, and structured observations.",
+                    image_data=image,
+                    mime_type=mime_type or "image/jpeg",
+                )
+                CHAT_HISTORY.append({"role": "user", "content": f"[Image attached] {vision_prompt}"})
+                CHAT_HISTORY.append({"role": "assistant", "content": final["text"]})
+                yield {
+                    "event": "result",
+                    "data": json.dumps({
+                        "text": final["text"],
+                        "model": f"{final['provider']}/{final['model']}",
+                    }),
+                }
+                return
+
+            # 2. Standard text mode: triage & tool synthesis
             manifest = load_local_manifest()
             history_context = _format_history_context()
 
             yield {"event": "status", "data": json.dumps({"step": "Routing request...", "tools_count": len(manifest)})}
 
-            # 1. Triage via Router AI with conversation context
+            # Triage via Router AI with conversation context
             router_prompt = (
                 f"Conversation History:\n{history_context}\n\n"
                 f"Existing tools:\n{json.dumps(manifest)}\n\n"
@@ -123,7 +151,7 @@ async def chat_stream(prompt: str):
                 }),
             }
 
-            # 2. Execute Existing Tool
+            # Execute Existing Tool
             if action == "USE_TOOL":
                 t_name = decision.get("tool_name", "")
                 yield {"event": "status", "data": json.dumps({"step": f"Running tool '{t_name}'..."})}
@@ -145,7 +173,7 @@ async def chat_stream(prompt: str):
                     action = "MAKE_TOOL"
                     decision["description"] = f"Fix tool '{t_name}' to fulfill: {prompt}"
 
-            # 3. Synthesize & Debug New Tool
+            # Synthesize & Debug New Tool
             if action == "MAKE_TOOL":
                 t_name = decision.get("tool_name", "custom_tool")
                 t_desc = decision.get("description", prompt)
@@ -175,7 +203,7 @@ async def chat_stream(prompt: str):
                     yield {"event": "error", "data": json.dumps({"error": build_res["output"]})}
                 return
 
-            # 4. Direct Response
+            # Direct Response
             chat_prompt = f"Conversation History:\n{history_context}\n\nUser: {prompt}"
             ans = await generate("chat", chat_prompt)
             CHAT_HISTORY.append({"role": "user", "content": prompt})
@@ -185,3 +213,11 @@ async def chat_stream(prompt: str):
             yield {"event": "error", "data": json.dumps({"error": str(e)})}
 
     return EventSourceResponse(event_generator())
+
+@app.get("/api/chat/stream")
+async def chat_stream_get(prompt: str):
+    return await _stream_chat(prompt)
+
+@app.post("/api/chat/stream")
+async def chat_stream_post(req: ChatRequest):
+    return await _stream_chat(req.prompt, req.image, req.mime_type or "image/jpeg")

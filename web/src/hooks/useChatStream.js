@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { streamUrl } from "../lib/api";
+import { streamEndpoint } from "../lib/api";
 
 const RETRY_RE = /retry|attempt|self-debug|fixing|failed|error/i;
 let n = 0;
@@ -10,7 +10,7 @@ const settle = (steps, to) => steps.map((s) => (s.state === "active" ? { ...s, s
 export function useChatStream({ onToolCreated } = {}) {
   const [messages, setMessages] = useState([]);
   const [streaming, setStreaming] = useState(false);
-  const esRef = useRef(null);
+  const abortCtrlRef = useRef(null);
   const idRef = useRef(null);
   const cbRef = useRef(onToolCreated);
   cbRef.current = onToolCreated;
@@ -21,27 +21,34 @@ export function useChatStream({ onToolCreated } = {}) {
   );
 
   const close = useCallback(() => {
-    esRef.current?.close(); // closing stops EventSource's auto-reconnect (which would re-send the prompt)
-    esRef.current = null;
+    if (abortCtrlRef.current) {
+      abortCtrlRef.current.abort();
+      abortCtrlRef.current = null;
+    }
     setStreaming(false);
   }, []);
 
   const send = useCallback(
-    (prompt) => {
+    async (prompt, imageAttachment = null) => {
       const text = prompt.trim();
-      if (!text || esRef.current) return;
+      if ((!text && !imageAttachment) || abortCtrlRef.current) return;
 
       const id = nid();
       idRef.current = id;
       setMessages((ms) => [
         ...ms,
-        { id: nid(), role: "user", text },
+        {
+          id: nid(),
+          role: "user",
+          text: text || "Analyze this image",
+          image: imageAttachment?.previewUrl || null,
+        },
         { id, role: "assistant", text: "", steps: [], status: "streaming" },
       ]);
       setStreaming(true);
 
-      const es = new EventSource(streamUrl(text));
-      esRef.current = es;
+      const controller = new AbortController();
+      abortCtrlRef.current = controller;
       let finished = false;
 
       const finish = (extra, stepState = "done") => {
@@ -51,54 +58,114 @@ export function useChatStream({ onToolCreated } = {}) {
         close();
       };
 
-      es.addEventListener("status", (e) => {
-        let d;
-        try { d = JSON.parse(e.data); } catch { return; }
-        const label = d.step || "Working…";
-        patch(id, (m) => ({
-          ...m,
-          steps: [
-            ...settle(m.steps, "done"),
-            {
-              id: nid(), label, state: "active", retry: RETRY_RE.test(label),
-              model: d.router_model, decision: d.decision, tools: d.tools_count,
-            },
-          ],
-        }));
-      });
+      try {
+        const resp = await fetch(streamEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: text,
+            image: imageAttachment?.data || null,
+            mime_type: imageAttachment?.mimeType || "image/jpeg",
+          }),
+          signal: controller.signal,
+        });
 
-      es.addEventListener("result", (e) => {
-        let d;
-        try { d = JSON.parse(e.data); } catch {
-          return finish({ status: "error", error: "Malformed response from backend" }, "failed");
+        if (!resp.ok) {
+          throw new Error(`Server returned ${resp.status}: ${resp.statusText}`);
         }
-        finish({ status: "done", text: d.text ?? "", raw: d.raw_tool_output, model: d.model, toolCreated: d.tool_created });
-        if (d.tool_created) cbRef.current?.(d.tool_created);
-      });
 
-      // Handles BOTH server-sent `event: error` (has e.data) and native connection errors (no e.data).
-      es.addEventListener("error", (e) => {
-        if (e.data) {
-          let msg = "Unknown error";
-          try { msg = JSON.parse(e.data).error || msg; } catch { msg = e.data; }
-          finish({ status: "error", error: msg }, "failed");
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const blocks = buffer.split("\n\n");
+          buffer = blocks.pop() || "";
+
+          for (const block of blocks) {
+            if (!block.trim()) continue;
+            let eventName = "message";
+            let eventData = "";
+
+            for (const line of block.split("\n")) {
+              if (line.startsWith("event:")) {
+                eventName = line.slice(6).trim();
+              } else if (line.startsWith("data:")) {
+                eventData = line.slice(5).trim();
+              }
+            }
+
+            if (eventName === "status") {
+              let d;
+              try { d = JSON.parse(eventData); } catch { continue; }
+              const label = d.step || "Working…";
+              patch(id, (m) => ({
+                ...m,
+                steps: [
+                  ...settle(m.steps, "done"),
+                  {
+                    id: nid(),
+                    label,
+                    state: "active",
+                    retry: RETRY_RE.test(label),
+                    model: d.router_model,
+                    decision: d.decision,
+                    tools: d.tools_count,
+                  },
+                ],
+              }));
+            } else if (eventName === "result") {
+              let d;
+              try { d = JSON.parse(eventData); } catch {
+                return finish({ status: "error", error: "Malformed response from backend" }, "failed");
+              }
+              finish({
+                status: "done",
+                text: d.text ?? "",
+                raw: d.raw_tool_output,
+                model: d.model,
+                toolCreated: d.tool_created,
+              });
+              if (d.tool_created) cbRef.current?.(d.tool_created);
+            } else if (eventName === "error") {
+              let msg = "Unknown error";
+              try { msg = JSON.parse(eventData).error || msg; } catch { msg = eventData; }
+              finish({ status: "error", error: msg }, "failed");
+            }
+          }
+        }
+
+        if (!finished) {
+          finish({ status: "done" });
+        }
+      } catch (err) {
+        if (err.name === "AbortError") {
+          patch(id, (m) => ({ ...m, status: "aborted", steps: settle(m.steps, "failed") }));
         } else {
-          finish({ status: "error", error: "Lost connection to the backend. Is it running?" }, "failed");
+          finish({ status: "error", error: err.message || "Lost connection to backend." }, "failed");
         }
-      });
+        close();
+      }
     },
     [close, patch]
   );
 
   const abort = useCallback(() => {
-    if (!esRef.current) return;
-    patch(idRef.current, (m) => ({ ...m, status: "aborted", steps: settle(m.steps, "failed") }));
+    if (abortCtrlRef.current) {
+      abortCtrlRef.current.abort();
+    }
+  }, []);
+
+  const reset = useCallback(() => {
     close();
-  }, [close, patch]);
+    setMessages([]);
+  }, [close]);
 
-  const reset = useCallback(() => { close(); setMessages([]); }, [close]);
-
-  useEffect(() => () => esRef.current?.close(), []);
+  useEffect(() => () => abortCtrlRef.current?.abort(), []);
 
   return { messages, streaming, send, abort, reset };
 }

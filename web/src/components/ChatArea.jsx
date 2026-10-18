@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowUp, ChevronRight, Sparkles, Square, TerminalSquare, TriangleAlert, Wrench } from "lucide-react";
+import { ArrowUp, ChevronRight, ImageIcon, Sparkles, Square, TerminalSquare, TriangleAlert, Wrench, X } from "lucide-react";
 import TraceViewer from "./TraceViewer";
 
 const SUGGESTIONS = ["Check root disk space", "Print system specs", "Fetch current memory usage"];
@@ -60,6 +60,13 @@ function Message({ m }) {
     return (
       <div className="flex justify-end animate-fade-in">
         <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-indigo-500/20 px-4 py-2.5 text-[15px] text-zinc-100 ring-1 ring-inset ring-indigo-400/20">
+          {m.image && (
+            <img
+              src={m.image}
+              alt="Uploaded thumbnail"
+              className="mb-2 max-h-60 rounded-xl object-contain border border-white/10"
+            />
+          )}
           {m.text}
         </div>
       </div>
@@ -93,40 +100,124 @@ function Message({ m }) {
 
 function Composer({ streaming, onSend, onAbort }) {
   const [value, setValue] = useState("");
+  const [attachment, setAttachment] = useState(null);
+  const fileInputRef = useRef(null);
   const ref = useRef(null);
 
   useLayoutEffect(() => {
     const el = ref.current;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    }
   }, [value]);
 
+  const handleFile = (file) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const dataUrl = e.target.result;
+      const base64Data = dataUrl.split(",")[1];
+      setAttachment({
+        data: base64Data,
+        mimeType: file.type,
+        previewUrl: dataUrl,
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handlePaste = (e) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of items) {
+      if (item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) handleFile(file);
+      }
+    }
+  };
+
   const submit = () => {
-    if (!value.trim() || streaming) return;
-    onSend(value);
+    if ((!value.trim() && !attachment) || streaming) return;
+    onSend(value, attachment);
     setValue("");
+    setAttachment(null);
   };
 
   return (
-    <div className="glass flex items-end gap-2 rounded-2xl p-2 focus-within:border-cyan-400/40 transition-colors">
-      <textarea
-        ref={ref} rows={1} value={value} placeholder="Ask Muse to do something…"
-        onChange={(e) => setValue(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
-        }}
-        className="max-h-[200px] flex-1 resize-none bg-transparent px-2 py-2 text-[15px] outline-none placeholder:text-zinc-500"
-      />
-      {streaming ? (
-        <button onClick={onAbort} aria-label="Stop" className="grid size-9 place-items-center rounded-xl bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition">
-          <Square className="size-4 fill-current" />
-        </button>
-      ) : (
-        <button onClick={submit} disabled={!value.trim()} aria-label="Send"
-          className="grid size-9 place-items-center rounded-xl bg-cyan-400 text-zinc-950 transition hover:bg-cyan-300 disabled:bg-white/10 disabled:text-zinc-500">
-          <ArrowUp className="size-4" />
-        </button>
+    <div
+      className="glass flex flex-col rounded-2xl p-2 focus-within:border-cyan-400/40 transition-colors"
+      onPaste={handlePaste}
+    >
+      {attachment && (
+        <div className="relative mb-2 ml-2 inline-flex items-center gap-2 self-start rounded-xl border border-white/10 bg-black/40 p-1.5 animate-fade-in">
+          <img src={attachment.previewUrl} alt="Preview" className="h-16 w-16 rounded-lg object-cover" />
+          <button
+            type="button"
+            onClick={() => setAttachment(null)}
+            aria-label="Remove image"
+            className="absolute -right-2 -top-2 flex size-5 items-center justify-center rounded-full bg-zinc-800 text-zinc-300 hover:bg-rose-500 hover:text-white transition"
+          >
+            <X className="size-3" />
+          </button>
+        </div>
       )}
+      <div className="flex items-end gap-2">
+        <input
+          type="file"
+          ref={fileInputRef}
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files?.[0]) handleFile(e.target.files[0]);
+            e.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Attach image"
+          title="Upload or paste an image"
+          className="grid size-9 shrink-0 place-items-center rounded-xl text-zinc-400 hover:bg-white/10 hover:text-zinc-200 transition"
+        >
+          <ImageIcon className="size-4" />
+        </button>
+        <textarea
+          ref={ref}
+          rows={1}
+          value={value}
+          placeholder={attachment ? "Ask a question about this image…" : "Ask Muse to do something, or attach an image…"}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          className="max-h-[200px] flex-1 resize-none bg-transparent px-2 py-2 text-[15px] outline-none placeholder:text-zinc-500"
+        />
+        {streaming ? (
+          <button
+            type="button"
+            onClick={onAbort}
+            aria-label="Stop"
+            className="grid size-9 shrink-0 place-items-center rounded-xl bg-rose-500/20 text-rose-300 hover:bg-rose-500/30 transition"
+          >
+            <Square className="size-4 fill-current" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!value.trim() && !attachment}
+            aria-label="Send"
+            className="grid size-9 shrink-0 place-items-center rounded-xl bg-cyan-400 text-zinc-950 transition hover:bg-cyan-300 disabled:bg-white/10 disabled:text-zinc-500"
+          >
+            <ArrowUp className="size-4" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -142,7 +233,7 @@ export default function ChatArea({ messages, streaming, onSend, onAbort }) {
           {messages.length === 0 ? (
             <div className="m-auto text-center">
               <h2 className="text-2xl font-semibold tracking-tight">What should Muse do?</h2>
-              <p className="mt-2 text-sm text-zinc-400">If it doesn't have a tool for the job, it writes one.</p>
+              <p className="mt-2 text-sm text-zinc-400">Attach an image to analyze, or ask for a task and it will write tools for it.</p>
               <div className="mt-6 flex flex-wrap justify-center gap-2">
                 {SUGGESTIONS.map((s) => (
                   <button key={s} onClick={() => onSend(s)}
@@ -160,7 +251,7 @@ export default function ChatArea({ messages, streaming, onSend, onAbort }) {
       </div>
       <div className="mx-auto w-full max-w-3xl px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <Composer streaming={streaming} onSend={onSend} onAbort={onAbort} />
-        <p className="mt-2 text-center text-[11px] text-zinc-600">Enter to send · Shift+Enter for a new line</p>
+        <p className="mt-2 text-center text-[11px] text-zinc-600">Enter to send · Shift+Enter for new line · Paste or click icon to attach image</p>
       </div>
     </div>
   );
