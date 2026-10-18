@@ -1,8 +1,10 @@
 import os
+import sys
 import re
 import html
 import json
 import base64
+import fcntl
 import asyncio
 import httpx
 from telegram import Update
@@ -468,6 +470,15 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⚠️ Voice note transcription failed: {e}")
 
 def main():
+    # Single-instance lock to prevent duplicate polling conflicts
+    lock_file_path = "/tmp/muse_telegram_bot.lock"
+    try:
+        lock_file = open(lock_file_path, "w")
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (IOError, BlockingIOError):
+        print("[Telegram Bot] ⚠️ Another instance of bot.py is already running. Exiting cleanly to avoid conflict.", flush=True)
+        return
+
     token = Config.TELEGRAM_BOT_TOKEN
     if not token:
         print("[Telegram Bot] TELEGRAM_BOT_TOKEN not configured in .env. Exiting.", flush=True)
