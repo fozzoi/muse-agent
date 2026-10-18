@@ -5,32 +5,32 @@ from core.config import Config
 # Verified active models across providers
 ROLE_ROUTES = {
     "router": [
+        ("gemini", "gemini-3.5-flash-lite"),
         ("groq", "openai/gpt-oss-20b"),
+        ("gemini", "gemini-3.1-flash-lite"),
         ("mistral", "codestral-latest"),
-        ("gemini", "gemini-2.5-flash-lite"),
-        ("groq", "openai/gpt-oss-120b"),
     ],
     "coder": [
         ("mistral", "codestral-latest"),
-        ("gemini", "gemini-2.5-flash-lite"),
+        ("gemini", "gemini-3.8-flash"),
+        ("gemini", "gemini-3.5-flash-lite"),
         ("groq", "openai/gpt-oss-120b"),
-        ("groq", "openai/gpt-oss-20b"),
     ],
     "chat": [
+        ("gemini", "gemini-3.5-flash-lite"),
         ("groq", "openai/gpt-oss-120b"),
+        ("gemini", "gemini-3.8-flash"),
         ("mistral", "codestral-latest"),
-        ("gemini", "gemini-2.5-flash-lite"),
-        ("groq", "openai/gpt-oss-20b"),
     ],
     "vision": [
+        ("gemini", "gemini-3.5-flash-lite"),
+        ("gemini", "gemini-3.8-flash"),
         ("mistral", "pixtral-12b-2409"),
-        ("gemini", "gemini-2.5-flash-lite"),
-        ("openrouter", "nvidia/nemotron-3.5-super-vl:free"),
     ],
     "heavy": [
+        ("gemini", "gemini-3.8-flash"),
         ("mistral", "codestral-latest"),
         ("groq", "openai/gpt-oss-120b"),
-        ("gemini", "gemini-2.5-flash-lite"),
     ],
 }
 
