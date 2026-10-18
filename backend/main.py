@@ -12,7 +12,7 @@ from core.config import Config
 from core.router import generate
 from core.database import load_local_manifest, save_local_manifest, sync_tools_from_cloud
 from core.sandbox import run_tool, create_and_run_tool
-from core.memory import add_message, format_history_context, clear_session, load_session, get_history, save_upload_image, UPLOADS_DIR
+from core.memory import add_message, format_history_context, clear_session, load_session, get_history, save_upload_image, copy_file_to_uploads, extract_image_path, UPLOADS_DIR
 
 ROUTER_SYSTEM_PROMPT = """You are the Orchestrator for Muse, an autonomous self-extending and self-healing AI agent running locally on the user's Linux machine with direct system access via tools/.
 Analyze the user request, recent conversation history, and existing tools.
@@ -200,9 +200,15 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                         system=SYNTHESIS_SYSTEM_PROMPT,
                         history=get_history(session, limit=10),
                     )
+                    final_text = final["text"]
+                    img_path = extract_image_path(output)
+                    web_img_url = copy_file_to_uploads(img_path) if img_path else ""
+                    if web_img_url and web_img_url not in final_text:
+                        final_text = f"{final_text}\n\n![Captured Image]({web_img_url})"
+
                     add_message(session, "user", prompt)
-                    add_message(session, "assistant", final["text"])
-                    yield {"event": "result", "data": json.dumps({"text": final["text"], "raw_tool_output": output, "model": f"{final['provider']}/{final['model']}"})}
+                    add_message(session, "assistant", final_text, extra={"image": web_img_url} if web_img_url else None)
+                    yield {"event": "result", "data": json.dumps({"text": final_text, "raw_tool_output": output, "model": f"{final['provider']}/{final['model']}"})}
                     return
                 else:
                     yield {"event": "status", "data": json.dumps({"step": f"Tool '{t_name}' failed, regenerating tool..."})}
@@ -224,12 +230,18 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                         system=SYNTHESIS_SYSTEM_PROMPT,
                         history=get_history(session, limit=10),
                     )
+                    final_text = final["text"]
+                    img_path = extract_image_path(build_res["output"])
+                    web_img_url = copy_file_to_uploads(img_path) if img_path else ""
+                    if web_img_url and web_img_url not in final_text:
+                        final_text = f"{final_text}\n\n![Captured Image]({web_img_url})"
+
                     add_message(session, "user", prompt)
-                    add_message(session, "assistant", final["text"])
+                    add_message(session, "assistant", final_text, extra={"image": web_img_url} if web_img_url else None)
                     yield {
                         "event": "result",
                         "data": json.dumps({
-                            "text": final["text"],
+                            "text": final_text,
                             "raw_tool_output": build_res["output"],
                             "tool_created": t_name,
                             "model": f"{final['provider']}/{final['model']}",

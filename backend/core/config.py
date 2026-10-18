@@ -1,7 +1,8 @@
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+load_dotenv(ENV_FILE)
 
 class Config:
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")

@@ -25,5 +25,11 @@
   },
   "open_zen_browser": {
     "description": "Run the command to launch Zen Browser via Flatpak: `flatpak run app.zen_browser.zen`. The tool should execute the command and print any output or errors."
+  },
+  "delete_screenshots": {
+    "description": "Deletes all screenshot image files (PNG) located in the user's Pictures/Screenshots directory and the /tmp directory that match the pattern 'screenshot*.png' or 'anuoopt_screenshot.png'. The script will list the files to be deleted, remove them, and print a summary of how many files were removed and any errors encountered."
+  },
+  "top_mem_processes": {
+    "description": "Run a Python script that executes `ps -eo pid,comm,%mem --sort=-%mem | head -n 6` to list the top 5 processes consuming the most memory, then print the output to the console."
   }
 }

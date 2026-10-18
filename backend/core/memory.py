@@ -1,7 +1,9 @@
 import os
+import re
 import json
 import base64
 import uuid
+import shutil
 import mimetypes
 from pathlib import Path
 
@@ -9,6 +11,50 @@ MEMORY_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "s
 UPLOADS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "uploads")
 os.makedirs(MEMORY_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+def extract_image_path(output: str) -> str | None:
+    """Extracts any image path referenced in tool JSON output or plain string."""
+    if not output:
+        return None
+    try:
+        data = json.loads(output)
+        if isinstance(data, dict):
+            for k in ("file_path", "image_path", "path", "file", "dest_file"):
+                val = data.get(k)
+                if val and isinstance(val, str):
+                    exp = os.path.expanduser(val.strip())
+                    if os.path.isfile(exp) and exp.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                        return exp
+    except Exception:
+        pass
+
+    matches = re.findall(r'(?:[\'"]|(?<=\s)|^)((?:/[\w\.\-]+)+/(?:[\w\.\-]+\.(?:png|jpg|jpeg|webp)))', output, re.IGNORECASE)
+    for m in matches:
+        exp = os.path.expanduser(m.strip())
+        if os.path.isfile(exp):
+            return exp
+
+    matches_home = re.findall(r'(?:[\'"]|(?<=\s)|^)(~/(?:[\w\.\-]+/)*(?:[\w\.\-]+\.(?:png|jpg|jpeg|webp)))', output, re.IGNORECASE)
+    for m in matches_home:
+        exp = os.path.expanduser(m.strip())
+        if os.path.isfile(exp):
+            return exp
+
+    return None
+
+def copy_file_to_uploads(filepath: str) -> str:
+    """Copies a local image file to UPLOADS_DIR and returns its relative /api/uploads/ URL."""
+    try:
+        if not filepath or not os.path.isfile(filepath):
+            return ""
+        ext = os.path.splitext(filepath)[1].lower() or ".png"
+        filename = f"{uuid.uuid4().hex[:12]}{ext}"
+        dest = os.path.join(UPLOADS_DIR, filename)
+        shutil.copyfile(filepath, dest)
+        return f"/api/uploads/{filename}"
+    except Exception as e:
+        print(f"[Memory Warning] Could not copy file to uploads: {e}")
+        return ""
 
 def save_upload_image(b64_data: str, mime_type: str = "image/jpeg") -> str:
     """Decodes and stores an uploaded image, returning its relative API path."""

@@ -5,31 +5,32 @@ from core.config import Config
 # Verified active models across providers
 ROLE_ROUTES = {
     "router": [
-        ("groq", "llama-3.3-70b-versatile"),
         ("groq", "openai/gpt-oss-20b"),
-        ("gemini", "gemini-2.5-flash"),
-        ("openrouter", "openrouter/free"),
+        ("mistral", "codestral-latest"),
+        ("gemini", "gemini-2.5-flash-lite"),
+        ("groq", "openai/gpt-oss-120b"),
     ],
     "coder": [
-        ("gemini", "gemini-2.5-flash"),
-        ("groq", "llama-3.3-70b-versatile"),
-        ("groq", "openai/gpt-oss-120b"),
         ("mistral", "codestral-latest"),
-        ("openrouter", "openrouter/free"),
+        ("gemini", "gemini-2.5-flash-lite"),
+        ("groq", "openai/gpt-oss-120b"),
+        ("groq", "openai/gpt-oss-20b"),
     ],
     "chat": [
-        ("groq", "llama-3.3-70b-versatile"),
         ("groq", "openai/gpt-oss-120b"),
-        ("gemini", "gemini-2.5-flash"),
-        ("openrouter", "openrouter/free"),
+        ("mistral", "codestral-latest"),
+        ("gemini", "gemini-2.5-flash-lite"),
+        ("groq", "openai/gpt-oss-20b"),
     ],
     "vision": [
-        ("gemini", "gemini-2.5-flash"),
-        ("openrouter", "openrouter/free"),
+        ("mistral", "pixtral-12b-2409"),
+        ("gemini", "gemini-2.5-flash-lite"),
+        ("openrouter", "nvidia/nemotron-3.5-super-vl:free"),
     ],
     "heavy": [
-        ("gemini", "gemini-2.5-flash"),
-        ("groq", "llama-3.3-70b-versatile"),
+        ("mistral", "codestral-latest"),
+        ("groq", "openai/gpt-oss-120b"),
+        ("gemini", "gemini-2.5-flash-lite"),
     ],
 }
 
@@ -184,7 +185,7 @@ async def generate(
 
                 # 3. Mistral
                 elif provider == "mistral" and Config.MISTRAL_API_KEY and not Config.MISTRAL_API_KEY.startswith("mstrl_your"):
-                    if image_data:
+                    if image_data and "pixtral" not in model.lower():
                         break
                     text = await _call_openai_compatible(
                         "https://api.mistral.ai/v1/chat/completions",
@@ -192,6 +193,8 @@ async def generate(
                         model,
                         prompt,
                         system,
+                        image_data=image_data,
+                        mime_type=mime_type,
                         history=history,
                     )
                     return {"text": text, "provider": provider, "model": model}

@@ -23,6 +23,19 @@ const md = {
   table: (p) => <div className="mt-3 overflow-x-auto"><table className="w-full text-left text-sm" {...p} /></div>,
   th: (p) => <th className="border-b border-white/10 px-2 py-1 font-medium" {...p} />,
   td: (p) => <td className="border-b border-white/5 px-2 py-1" {...p} />,
+  img: ({ src, alt, ...p }) => {
+    const fullSrc = src && src.startsWith("/") && !src.startsWith("//") ? `${API}${src}` : src;
+    return (
+      <img
+        src={fullSrc}
+        alt={alt || "Output preview"}
+        className="mt-3 max-h-96 rounded-xl border border-white/10 object-contain shadow-lg cursor-pointer hover:opacity-95 transition"
+        onClick={() => window.open(fullSrc, "_blank")}
+        loading="lazy"
+        {...p}
+      />
+    );
+  },
 };
 
 function prettyRaw(raw) {
