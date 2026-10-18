@@ -67,5 +67,29 @@
       "mute_audio",
       "auto_healed"
     ]
+  },
+  {
+    "id": "no-grim-on-gnome",
+    "title": "Never call grim or slurp on Ubuntu GNOME Wayland",
+    "problem": "grim is designed only for wlroots/Sway compositors. On Ubuntu GNOME (Mutter), calling grim throws FileNotFoundError: [Errno 2] No such file or directory: 'grim'.",
+    "solution": "Use python mss with sct.shot(), pyscreenshot, or the existing take_screenshot tool.",
+    "tags": [
+      "screenshot",
+      "wayland",
+      "gnome",
+      "mutter",
+      "grim"
+    ]
+  },
+  {
+    "id": "no-getnotifications-on-gnome",
+    "title": "GNOME Notification DBUS Limitations",
+    "problem": "The FreeDesktop notification specification does not mandate GetNotifications, and GNOME Shell does not implement org.freedesktop.Notifications.GetNotifications.",
+    "solution": "Do not attempt to call GetNotifications over DBus. Inspect system logs via 'journalctl -b --user -u org.gnome.Shell' or read app-specific log files.",
+    "tags": [
+      "notifications",
+      "dbus",
+      "gnome"
+    ]
   }
 ]

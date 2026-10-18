@@ -46,16 +46,31 @@ If no parameters are provided, perform default status reporting or return a clea
 4. NO INTERACTIVE SUDO:
 Never call commands requiring interactive root/sudo password (like `sudo apt`). If a tool needs elevated privileges, report it in the JSON output cleanly.
 
-5. For Linux system tasks:
+5. SCREENSHOT RULE FOR UBUNTU GNOME / WAYLAND:
+NEVER call 'grim' or 'slurp'. grim is only for wlroots/Sway and fails on Ubuntu GNOME.
+Use either python mss, pyscreenshot, or pillow ImageGrab:
+```python
+import mss
+with mss.mss() as sct:
+    sct.shot(output=str(output_path))
+```
+Or invoke the existing local tool 'take_screenshot.py'.
+
+6. DESKTOP NOTIFICATIONS:
+The GNOME notification server does not implement GetNotifications. Do not call org.freedesktop.Notifications.GetNotifications.
+To check notifications, inspect system logs via 'journalctl -b --user -u org.gnome.Shell' or read app-specific state.
+
+7. For Linux system tasks:
 - Audio/Media: Use wpctl or pactl via subprocess.check_output. Ensure env sets XDG_RUNTIME_DIR=/run/user/<uid> and DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus.
 - Hardware/System: Read /proc, /sys, shutil, psutil, or standard CLI utilities (df, free, ip, lsblk, upower).
 
-6. Print ONLY the clean final result (JSON or clear text) to stdout.
-7. Return ONLY valid Python code inside ```python ... ``` fences."""
+8. Print ONLY the clean final result (JSON or clear text) to stdout.
+9. Return ONLY valid Python code inside ```python ... ``` fences."""
 
 # Map commonly imported module names to their PyPI package names
 COMMON_PACKAGE_MAP = {
     "pil": "pillow",
+    "pillow": "pillow",
     "cv2": "opencv-python-headless",
     "yaml": "pyyaml",
     "bs4": "beautifulsoup4",
@@ -74,6 +89,10 @@ COMMON_PACKAGE_MAP = {
     "websocket": "websocket-client",
     "dns": "dnspython",
     "pyscreenshot": "pyscreenshot",
+    "mss": "mss",
+    "instaloader": "instaloader",
+    "playwright": "playwright",
+    "pyautogui": "pyautogui",
 }
 
 def get_python_executable() -> str:
@@ -85,13 +104,20 @@ def get_python_executable() -> str:
     return sys.executable
 
 def extract_missing_module(error_message: str) -> str | None:
-    """Detects missing module names from ModuleNotFoundError or ImportError tracebacks."""
+    """Detects missing module names from ModuleNotFoundError, ImportError, or raw tracebacks."""
     if not error_message:
         return None
-    match = re.search(r"(?:ModuleNotFoundError|ImportError):\s+No module named ['\"]([^'\"]+)['\"]", error_message)
-    if match:
-        raw_mod = match.group(1).split(".")[0].strip()
-        return raw_mod
+    patterns = [
+        r"(?:ModuleNotFoundError|ImportError):\s+No module named ['\"]([^'\"]+)['\"]",
+        r"No module named ['\"]([^'\"]+)['\"]",
+        r"cannot import name ['\"][^'\"]+['\"] from ['\"]([^'\"]+)['\"]",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, error_message)
+        if match:
+            raw_mod = match.group(1).split(".")[0].strip()
+            if raw_mod and not raw_mod.startswith("_"):
+                return raw_mod
     return None
 
 def auto_install_package(module_name: str) -> tuple[bool, str]:
@@ -138,13 +164,19 @@ def run_tool(name: str, args_payload: dict | str = "", allow_auto_install: bool 
     env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
     env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
 
+    backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    venv_bin = os.path.join(backend_dir, "venv", "bin")
+    if os.path.isdir(venv_bin):
+        env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
+        env["VIRTUAL_ENV"] = os.path.join(backend_dir, "venv")
+
     try:
         res = subprocess.run(
             [python_bin, script_path, arg_str],
             env=env,
             capture_output=True,
             text=True,
-            timeout=25,
+            timeout=60,
         )
         if res.returncode != 0:
             err = (
@@ -163,7 +195,7 @@ def run_tool(name: str, args_payload: dict | str = "", allow_auto_install: bool 
                             env=env,
                             capture_output=True,
                             text=True,
-                            timeout=25,
+                            timeout=60,
                         )
                         if retry_res.returncode == 0:
                             retry_out = retry_res.stdout.strip()
@@ -190,7 +222,7 @@ def run_tool(name: str, args_payload: dict | str = "", allow_auto_install: bool 
 
         return True, out
     except subprocess.TimeoutExpired:
-        return False, "Error: Tool execution timed out after 25 seconds."
+        return False, "Error: Tool execution timed out after 60 seconds."
     except Exception as e:
         return False, str(e)
 
