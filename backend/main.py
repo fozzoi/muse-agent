@@ -14,27 +14,39 @@ from core.database import load_local_manifest, save_local_manifest, sync_tools_f
 from core.sandbox import run_tool, create_and_run_tool
 from core.memory import add_message, format_history_context, clear_session, load_session, get_history, save_upload_image, copy_file_to_uploads, extract_image_path, UPLOADS_DIR
 
-ROUTER_SYSTEM_PROMPT = """You are the Orchestrator for Muse, an autonomous self-extending and self-healing AI agent running locally on the user's Linux machine with direct system access via tools/.
-Analyze the user request, recent conversation history, and existing tools.
-Return ONLY a valid JSON object matching one of these 3 actions:
+ROUTER_SYSTEM_PROMPT = """You are the Lead Orchestrator for Muse, an autonomous AI agent running locally on Ubuntu Linux with direct system access via tools/.
+You can execute tools in sequence to accomplish complex tasks, combine outputs, and answer user requests.
 
-1. If an existing tool can solve it:
-{"action": "USE_TOOL", "tool_name": "exact_existing_name", "args": {"key": "value"}}
+Analyze:
+1. The user's request.
+2. Available tools in the local tool registry.
+3. Steps already completed in this turn (if any).
+
+Return ONLY a valid JSON object matching ONE of these 4 actions:
+
+1. EXECUTE A TOOL (Next step in your plan):
+{"action": "USE_TOOL", "tool_name": "exact_name_from_available_tools", "args": {"key": "value"}}
 Common tools:
-- For viewing/listing directories and folders: {"action": "USE_TOOL", "tool_name": "fs_list", "args": {"path": "..."}}
-- For reading/inspecting file contents: {"action": "USE_TOOL", "tool_name": "fs_read", "args": {"path": "..."}}
-- For system stats, CPU, RAM, disk, uptime: {"action": "USE_TOOL", "tool_name": "sys_info", "args": {}}
-- For taking desktop screenshots: {"action": "USE_TOOL", "tool_name": "take_screenshot", "args": {}}
-- For visiting a website or capturing a webpage screenshot: {"action": "USE_TOOL", "tool_name": "web_screenshot", "args": {"url": "..."}}
-- For searching the web, latest news, movie reviews, current events: {"action": "USE_TOOL", "tool_name": "web_search", "args": {"query": "..."}}
+- fs_list: Lists files & directories in a path: {"path": "..."}
+- fs_read: Reads file text content: {"path": "..."}
+- sys_info: Returns CPU, RAM, disk, uptime: {}
+- take_screenshot: Captures desktop screenshot: {}
+- web_screenshot: Captures webpage screenshot: {"url": "..."}
+- web_search: Searches the web for news, reviews, information: {"query": "..."}
 
-2. If it requires custom system execution or automation and NO existing tool fits:
-{"action": "MAKE_TOOL", "tool_name": "short_snake_case_name", "description": "Clear specification of what the Python script must do and print", "args": {"key": "value"}}
+2. COMPLETE (All necessary info collected, ready to answer):
+{"action": "FINISH"}
+Use this when previous tool steps have gathered everything needed to answer the user request.
 
-3. If it is general conversation, clarification, or standard Q&A:
+3. CREATE NEW TOOL (Only if capability is truly missing):
+{"action": "MAKE_TOOL", "tool_name": "short_snake_case_name", "description": "Specification of what the script must do", "args": {}}
+ONLY use this if a required core capability does NOT exist in the available tools and CANNOT be achieved by chaining existing tools (e.g. fs_list + fs_read, or web_search + web_screenshot).
+
+4. DIRECT CONVERSATION (No tools needed):
 {"action": "DIRECT"}
+Use for greetings, general reasoning, or conversational questions that do not need system or web tools.
 
-Note: Always format 'args' as a JSON key-value dictionary. Return raw JSON only."""
+Note: Always format 'args' as a JSON dictionary. Return raw JSON only."""
 
 SYNTHESIS_SYSTEM_PROMPT = """You are Muse, an autonomous self-extending and self-healing AI agent running locally on the user's Linux machine with direct system access via generated Python tools in tools/.
 You have real, direct access to the local operating system, files, and terminal environment through your executed tools.
@@ -162,101 +174,132 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                 }
                 return
 
-            # 2. Standard text mode: triage & tool synthesis
+            # 2. Multi-step agent execution loop
             manifest = load_local_manifest()
             history_context = format_history_context(session)
 
-            yield {"event": "status", "data": json.dumps({"step": "Routing request...", "tools_count": len(manifest)})}
+            max_steps = 4
+            step_count = 0
+            tool_trace = []
+            combined_raw = []
+            images_collected = []
+            created_tool_name = None
 
-            # Triage via Router AI with conversation context
-            router_prompt = (
-                f"Conversation History:\n{history_context}\n\n"
-                f"Existing tools:\n{json.dumps(manifest)}\n\n"
-                f"Current user request: {prompt}"
-            )
-            route_res = await generate("router", router_prompt, system=ROUTER_SYSTEM_PROMPT)
-            decision = _parse_json(route_res["text"])
-            action = decision.get("action", "DIRECT")
-            tool_args = decision.get("args", {})
+            yield {"event": "status", "data": json.dumps({"step": "Analyzing request & planning...", "tools_count": len(manifest)})}
 
-            yield {
-                "event": "status",
-                "data": json.dumps({
-                    "step": f"Decision: {action}",
-                    "router_model": f"{route_res['provider']}/{route_res['model']}",
-                    "decision": decision,
-                }),
-            }
-
-            # Execute Existing Tool
-            if action == "USE_TOOL":
-                t_name = decision.get("tool_name", "")
-                yield {"event": "status", "data": json.dumps({"step": f"Running tool '{t_name}'..."})}
-                success, output = run_tool(t_name, tool_args)
-
-                if success:
-                    final = await generate(
-                        "chat",
-                        f"Tool '{t_name}' returned:\n{output}\nSummarize the result clearly for the user.",
-                        system=SYNTHESIS_SYSTEM_PROMPT,
-                        history=get_history(session, limit=10),
+            while step_count < max_steps:
+                step_count += 1
+                if not tool_trace:
+                    planner_prompt = (
+                        f"Conversation History:\n{history_context}\n\n"
+                        f"Available Tools:\n{json.dumps(manifest)}\n\n"
+                        f"User Request: {prompt}"
                     )
-                    final_text = final["text"]
-                    img_path = extract_image_path(output)
-                    web_img_url = copy_file_to_uploads(img_path) if img_path else ""
-                    if web_img_url and web_img_url not in final_text:
-                        final_text = f"{final_text}\n\n![Captured Image]({web_img_url})"
-
-                    add_message(session, "user", prompt)
-                    add_message(session, "assistant", final_text, extra={"image": web_img_url} if web_img_url else None)
-                    yield {"event": "result", "data": json.dumps({"text": final_text, "raw_tool_output": output, "model": f"{final['provider']}/{final['model']}"})}
-                    return
                 else:
-                    yield {"event": "status", "data": json.dumps({"step": f"Tool '{t_name}' failed, regenerating tool..."})}
-                    action = "MAKE_TOOL"
-                    decision["description"] = f"Fix tool '{t_name}' to fulfill: {prompt}"
-
-            # Synthesize & Debug New Tool
-            if action == "MAKE_TOOL":
-                t_name = decision.get("tool_name", "custom_tool")
-                t_desc = decision.get("description", prompt)
-                yield {"event": "status", "data": json.dumps({"step": f"Synthesizing new tool '{t_name}'..."})}
-
-                build_res = await create_and_run_tool(t_name, t_desc, tool_args)
-                if build_res["success"]:
-                    yield {"event": "status", "data": json.dumps({"step": f"Tool '{t_name}' created. Formatting answer..."})}
-                    final = await generate(
-                        "chat",
-                        f"Newly created tool '{t_name}' produced:\n{build_res['output']}\nProvide the final response for the user.",
-                        system=SYNTHESIS_SYSTEM_PROMPT,
-                        history=get_history(session, limit=10),
+                    steps_summary = "\n".join([
+                        f"- Step {i+1}: Ran '{st['tool']}' with args {st['args']} -> Output:\n{st['output'][:1200]}"
+                        for i, st in enumerate(tool_trace)
+                    ])
+                    planner_prompt = (
+                        f"Conversation History:\n{history_context}\n\n"
+                        f"Available Tools:\n{json.dumps(manifest)}\n\n"
+                        f"Steps already completed in this turn:\n{steps_summary}\n\n"
+                        f"Original User Request: {prompt}\n\n"
+                        f"Based on completed steps and output above, decide the next action: USE_TOOL, FINISH, or MAKE_TOOL:"
                     )
-                    final_text = final["text"]
-                    img_path = extract_image_path(build_res["output"])
-                    web_img_url = copy_file_to_uploads(img_path) if img_path else ""
-                    if web_img_url and web_img_url not in final_text:
-                        final_text = f"{final_text}\n\n![Captured Image]({web_img_url})"
 
-                    add_message(session, "user", prompt)
-                    add_message(session, "assistant", final_text, extra={"image": web_img_url} if web_img_url else None)
+                route_res = await generate("router", planner_prompt, system=ROUTER_SYSTEM_PROMPT)
+                decision = _parse_json(route_res["text"])
+                action = decision.get("action", "FINISH" if tool_trace else "DIRECT")
+
+                if action == "FINISH":
+                    break
+
+                if action == "DIRECT":
+                    if not tool_trace:
+                        ans = await generate("chat", prompt, system=SYNTHESIS_SYSTEM_PROMPT, history=get_history(session, limit=10))
+                        add_message(session, "user", prompt)
+                        add_message(session, "assistant", ans["text"])
+                        yield {"event": "result", "data": json.dumps({"text": ans["text"], "model": f"{ans['provider']}/{ans['model']}"})}
+                        return
+                    else:
+                        break
+
+                if action == "USE_TOOL":
+                    t_name = decision.get("tool_name", "")
+                    tool_args = decision.get("args", {})
                     yield {
-                        "event": "result",
+                        "event": "status",
                         "data": json.dumps({
-                            "text": final_text,
-                            "raw_tool_output": build_res["output"],
-                            "tool_created": t_name,
-                            "model": f"{final['provider']}/{final['model']}",
+                            "step": f"Step {step_count}: Running '{t_name}'...",
+                            "decision": decision,
+                            "router_model": f"{route_res['provider']}/{route_res['model']}",
+                            "tools_count": len(manifest),
                         }),
                     }
-                else:
-                    yield {"event": "error", "data": json.dumps({"error": build_res["output"]})}
-                return
 
-            # Direct Response
-            ans = await generate("chat", prompt, system=SYNTHESIS_SYSTEM_PROMPT, history=get_history(session, limit=10))
+                    success, output = run_tool(t_name, tool_args)
+                    if success:
+                        tool_trace.append({"tool": t_name, "args": tool_args, "output": output})
+                        combined_raw.append(f"[{t_name}]:\n{output}")
+                        img = extract_image_path(output)
+                        if img and img not in images_collected:
+                            images_collected.append(img)
+                        continue
+                    else:
+                        yield {"event": "status", "data": json.dumps({"step": f"Tool '{t_name}' failed, repairing..."})}
+                        action = "MAKE_TOOL"
+                        decision["description"] = f"Fix tool '{t_name}' to fulfill: {prompt}"
+                        decision["tool_name"] = f"fix_{t_name}"
+
+                if action == "MAKE_TOOL":
+                    t_name = decision.get("tool_name", "custom_tool")
+                    t_desc = decision.get("description", prompt)
+                    tool_args = decision.get("args", {})
+                    yield {"event": "status", "data": json.dumps({"step": f"Synthesizing new tool '{t_name}'..."})}
+
+                    build_res = await create_and_run_tool(t_name, t_desc, tool_args)
+                    if build_res["success"]:
+                        created_tool_name = t_name
+                        tool_trace.append({"tool": t_name, "args": tool_args, "output": build_res["output"]})
+                        combined_raw.append(f"[{t_name}]:\n{build_res['output']}")
+                        img = extract_image_path(build_res["output"])
+                        if img and img not in images_collected:
+                            images_collected.append(img)
+                        break
+                    else:
+                        yield {"event": "error", "data": json.dumps({"error": build_res["output"]})}
+                        return
+
+            # Synthesize final answer from all gathered tool outputs
+            yield {"event": "status", "data": json.dumps({"step": "Synthesizing final response..."})}
+            steps_context = "\n\n---\n\n".join(combined_raw)
+            final = await generate(
+                "chat",
+                f"User asked: {prompt}\n\nExecuted tool results across steps:\n{steps_context}\n\nSynthesize a clear, structured, and complete final answer for the user.",
+                system=SYNTHESIS_SYSTEM_PROMPT,
+                history=get_history(session, limit=10),
+            )
+            final_text = final["text"]
+            web_img_url = ""
+            for img in images_collected:
+                url = copy_file_to_uploads(img)
+                if url:
+                    web_img_url = url
+                    if url not in final_text:
+                        final_text = f"{final_text}\n\n![Captured Image]({url})"
+
             add_message(session, "user", prompt)
-            add_message(session, "assistant", ans["text"])
-            yield {"event": "result", "data": json.dumps({"text": ans["text"], "model": f"{ans['provider']}/{ans['model']}"})}
+            add_message(session, "assistant", final_text, extra={"image": web_img_url} if web_img_url else None)
+            yield {
+                "event": "result",
+                "data": json.dumps({
+                    "text": final_text,
+                    "raw_tool_output": "\n\n---\n\n".join(combined_raw),
+                    "tool_created": created_tool_name,
+                    "model": f"{final['provider']}/{final['model']}",
+                }),
+            }
         except Exception as e:
             yield {"event": "error", "data": json.dumps({"error": str(e)})}
 

@@ -228,68 +228,123 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         manifest = load_local_manifest()
         history_context = format_history_context(session_id)
 
-        # 1. Triage via Router AI with conversation context
-        router_prompt = (
-            f"Conversation History:\n{history_context}\n\n"
-            f"Existing tools:\n{json.dumps(manifest)}\n\n"
-            f"Current user request: {user_prompt}"
+        max_steps = 4
+        step_count = 0
+        tool_trace = []
+        combined_raw = []
+        images_collected = []
+        created_tool_name = None
+
+        while step_count < max_steps:
+            step_count += 1
+            if not tool_trace:
+                planner_prompt = (
+                    f"Conversation History:\n{history_context}\n\n"
+                    f"Available Tools:\n{json.dumps(manifest)}\n\n"
+                    f"Current user request: {user_prompt}"
+                )
+            else:
+                steps_summary = "\n".join([
+                    f"- Step {i+1}: Ran '{st['tool']}' with args {st['args']} -> Output:\n{st['output'][:1200]}"
+                    for i, st in enumerate(tool_trace)
+                ])
+                planner_prompt = (
+                    f"Conversation History:\n{history_context}\n\n"
+                    f"Available Tools:\n{json.dumps(manifest)}\n\n"
+                    f"Steps already completed in this turn:\n{steps_summary}\n\n"
+                    f"Original User Request: {user_prompt}\n\n"
+                    f"Based on completed steps and output above, decide the next action: USE_TOOL, FINISH, or MAKE_TOOL:"
+                )
+
+            route_res = await generate("router", planner_prompt, system=ROUTER_SYSTEM_PROMPT)
+            decision = _parse_json(route_res["text"])
+            action = decision.get("action", "FINISH" if tool_trace else "DIRECT")
+
+            if action == "FINISH":
+                break
+
+            if action == "DIRECT":
+                if not tool_trace:
+                    ans = await generate("chat", user_prompt, system=TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, history=get_history(session_id, limit=10))
+                    add_message(session_id, "user", user_prompt)
+                    add_message(session_id, "assistant", ans["text"])
+                    await deliver_response(update, status_msg, ans["text"])
+                    return
+                else:
+                    break
+
+            if action == "USE_TOOL":
+                t_name = decision.get("tool_name", "")
+                tool_args = decision.get("args", {})
+                try:
+                    await status_msg.edit_text(f"⚙️ Step {step_count}: Running `{t_name}`...", parse_mode="Markdown")
+                except Exception:
+                    pass
+
+                success, output = run_tool(t_name, tool_args)
+                if success:
+                    tool_trace.append({"tool": t_name, "args": tool_args, "output": output})
+                    combined_raw.append(f"[{t_name}]:\n{output}")
+                    img = extract_image_from_tool_output(output)
+                    if img and img not in images_collected:
+                        images_collected.append(img)
+                    continue
+                else:
+                    try:
+                        await status_msg.edit_text(f"⚠️ Step {step_count}: `{t_name}` failed, adapting...", parse_mode="Markdown")
+                    except Exception:
+                        pass
+                    action = "MAKE_TOOL"
+                    decision["description"] = f"Fix tool '{t_name}' to fulfill: {user_prompt}"
+                    decision["tool_name"] = f"fix_{t_name}"
+
+            if action == "MAKE_TOOL":
+                t_name = decision.get("tool_name", "custom_tool")
+                t_desc = decision.get("description", user_prompt)
+                tool_args = decision.get("args", {})
+                try:
+                    await status_msg.edit_text(f"🛠️ Synthesizing new tool `{t_name}`...", parse_mode="Markdown")
+                except Exception:
+                    pass
+
+                build_res = await create_and_run_tool(t_name, t_desc, tool_args)
+                if build_res["success"]:
+                    created_tool_name = t_name
+                    tool_trace.append({"tool": t_name, "args": tool_args, "output": build_res["output"]})
+                    combined_raw.append(f"[{t_name}]:\n{build_res['output']}")
+                    img = extract_image_from_tool_output(build_res["output"])
+                    if img and img not in images_collected:
+                        images_collected.append(img)
+                    break
+                else:
+                    try:
+                        await status_msg.edit_text(f"❌ Tool build failed:\n`{build_res['output']}`", parse_mode="Markdown")
+                    except Exception:
+                        pass
+                    return
+
+        # Synthesize final multi-tool response for Telegram
+        try:
+            await status_msg.edit_text("✨ Formatting final response...")
+        except Exception:
+            pass
+
+        steps_context = "\n\n---\n\n".join(combined_raw)
+        final = await generate(
+            "chat",
+            f"User asked: {user_prompt}\n\nExecuted tool results across steps:\n{steps_context}\n\nProvide the final structured answer for the user on Telegram.",
+            system=TELEGRAM_SYNTHESIS_SYSTEM_PROMPT,
+            history=get_history(session_id, limit=10),
         )
-        route_res = await generate("router", router_prompt, system=ROUTER_SYSTEM_PROMPT)
-        decision = _parse_json(route_res["text"])
-        action = decision.get("action", "DIRECT")
-        tool_args = decision.get("args", {})
+        reply_text = final["text"]
+        if created_tool_name:
+            reply_text += f"\n\n*(Created tool: `{created_tool_name}.py`)*"
 
-        # 2. Existing Tool
-        if action == "USE_TOOL":
-            t_name = decision.get("tool_name", "")
-            await status_msg.edit_text(f"⚙️ Running existing tool: `{t_name}`...", parse_mode="Markdown")
-            success, output = run_tool(t_name, tool_args)
-
-            if success:
-                final = await generate(
-                    "chat",
-                    f"Tool '{t_name}' returned:\n{output}\nSummarize clearly for the user on Telegram.",
-                    system=TELEGRAM_SYNTHESIS_SYSTEM_PROMPT,
-                    history=get_history(session_id, limit=10),
-                )
-                add_message(session_id, "user", user_prompt)
-                add_message(session_id, "assistant", final["text"])
-                image_file = extract_image_from_tool_output(output)
-                await deliver_response(update, status_msg, final["text"], image_file)
-                return
-            else:
-                action = "MAKE_TOOL"
-                decision["description"] = f"Fix tool '{t_name}' to fulfill: {user_prompt}"
-
-        # 3. Dynamic Tool Maker
-        if action == "MAKE_TOOL":
-            t_name = decision.get("tool_name", "custom_tool")
-            t_desc = decision.get("description", user_prompt)
-            await status_msg.edit_text(f"🛠️ Synthesizing new tool `{t_name}`...", parse_mode="Markdown")
-
-            build_res = await create_and_run_tool(t_name, t_desc, tool_args)
-            if build_res["success"]:
-                await status_msg.edit_text(" Formatting final response...")
-                final = await generate(
-                    "chat",
-                    f"Newly created tool '{t_name}' produced:\n{build_res['output']}\nProvide final answer for Telegram.",
-                    system=TELEGRAM_SYNTHESIS_SYSTEM_PROMPT,
-                    history=get_history(session_id, limit=10),
-                )
-                add_message(session_id, "user", user_prompt)
-                add_message(session_id, "assistant", final["text"])
-                reply_text = f"{final['text']}\n\n*(Created tool: `{t_name}.py`)*"
-                image_file = extract_image_from_tool_output(build_res["output"])
-                await deliver_response(update, status_msg, reply_text, image_file)
-            else:
-                await status_msg.edit_text(f"❌ Tool build failed:\n`{build_res['output']}`", parse_mode="Markdown")
-            return
-
-        # 4. Direct Response with memory
-        ans = await generate("chat", user_prompt, system=TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, history=get_history(session_id, limit=10))
         add_message(session_id, "user", user_prompt)
-        add_message(session_id, "assistant", ans["text"])
-        await deliver_response(update, status_msg, ans["text"])
+        add_message(session_id, "assistant", reply_text)
+
+        img_to_send = images_collected[-1] if images_collected else None
+        await deliver_response(update, status_msg, reply_text, img_to_send)
 
     except Exception as e:
         print(f"[Telegram Bot] Message error: {e}", flush=True)
