@@ -16,5 +16,8 @@
   },
   "list_documents_muse_agent": {
     "description": "A Python script that lists all files and directories inside the path ~/Documents/muse-agent and prints a JSON object with a key 'entries' containing an array of entry names. Each entry should be a string representing the file or folder name. The script should handle errors gracefully and print an empty array if the directory does not exist."
+  },
+  "take_screenshot": {
+    "description": "Captures a screenshot of the user's desktop display and saves it to ~/Pictures/Screenshots or a specified path."
   }
 }
