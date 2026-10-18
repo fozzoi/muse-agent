@@ -83,23 +83,25 @@ export function useChatStream({ onToolCreated } = {}) {
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
-          const blocks = buffer.split("\n\n");
+          const blocks = buffer.split(/\r?\n\r?\n/);
           buffer = blocks.pop() || "";
 
           for (const block of blocks) {
             if (!block.trim()) continue;
             let eventName = "message";
-            let eventData = "";
+            const dataLines = [];
 
-            for (const line of block.split("\n")) {
+            for (const line of block.split(/\r?\n/)) {
               if (line.startsWith("event:")) {
                 eventName = line.slice(6).trim();
               } else if (line.startsWith("data:")) {
-                eventData = line.slice(5).trim();
+                dataLines.push(line.slice(5).trim());
               }
             }
 
-            if (eventName === "status") {
+            const eventData = dataLines.join("\n");
+
+            if (eventName === "status" && eventData) {
               let d;
               try { d = JSON.parse(eventData); } catch { continue; }
               const label = d.step || "Working…";
@@ -118,7 +120,7 @@ export function useChatStream({ onToolCreated } = {}) {
                   },
                 ],
               }));
-            } else if (eventName === "result") {
+            } else if (eventName === "result" && eventData) {
               let d;
               try { d = JSON.parse(eventData); } catch {
                 return finish({ status: "error", error: "Malformed response from backend" }, "failed");
@@ -131,7 +133,7 @@ export function useChatStream({ onToolCreated } = {}) {
                 toolCreated: d.tool_created,
               });
               if (d.tool_created) cbRef.current?.(d.tool_created);
-            } else if (eventName === "error") {
+            } else if (eventName === "error" && eventData) {
               let msg = "Unknown error";
               try { msg = JSON.parse(eventData).error || msg; } catch { msg = eventData; }
               finish({ status: "error", error: msg }, "failed");
@@ -139,10 +141,38 @@ export function useChatStream({ onToolCreated } = {}) {
           }
         }
 
+        if (!finished && buffer.trim()) {
+          const block = buffer.trim();
+          let eventName = "message";
+          const dataLines = [];
+          for (const line of block.split(/\r?\n/)) {
+            if (line.startsWith("event:")) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trim());
+            }
+          }
+          const eventData = dataLines.join("\n");
+          if (eventName === "result" && eventData) {
+            try {
+              const d = JSON.parse(eventData);
+              finish({
+                status: "done",
+                text: d.text ?? "",
+                raw: d.raw_tool_output,
+                model: d.model,
+                toolCreated: d.tool_created,
+              });
+              if (d.tool_created) cbRef.current?.(d.tool_created);
+            } catch {}
+          }
+        }
+
         if (!finished) {
           finish({ status: "done" });
         }
       } catch (err) {
+        if (finished) return;
         if (err.name === "AbortError") {
           patch(id, (m) => ({ ...m, status: "aborted", steps: settle(m.steps, "failed") }));
         } else {
