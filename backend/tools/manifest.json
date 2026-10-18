@@ -1,15 +1,12 @@
 {
-  "fs_list": {
-    "description": "Lists files and subdirectories inside a directory path, providing names, types, and sizes. Accepts relative paths or ~."
+  "browser_agent": {
+    "description": "Automated web navigation, scraping, and interaction with persistent profile. Actions: 'navigate' (loads page, scrapes clean readable text, and takes screenshot), 'click' (clicks element selector), 'type' (fills text into selector), and 'login_session' (opens Chrome GUI on your desktop so you can log into any site like Instagram once without giving credentials in chat)."
   },
-  "fs_read": {
-    "description": "Reads and prints the text content of any file up to 10,000 characters. Resolves relative paths or ~."
+  "sys_exec": {
+    "description": "Safely executes a bash shell command (e.g. system commands, cli queries, process checks) with a 15-second timeout and returns exit code, stdout, and stderr."
   },
-  "sys_info": {
-    "description": "Returns basic operating system details, CPU cores, RAM usage, root disk space, and uptime as JSON."
-  },
-  "system_monitor": {
-    "description": "Proactive health monitoring: reports CPU load, memory usage, disk stats, battery percentage, uptime, resource alerts, and top 5 memory/CPU consuming processes."
+  "web_search": {
+    "description": "Performs a live web search for a query and returns titles, URLs, and text snippets of top search results."
   },
   "media_control": {
     "description": "Controls audio volume, mute toggle, WirePlumber audio sinks, and Bluetooth status. Accepts actions like 'status', 'volume_up', 'volume_down', 'set_volume' (with 'value', e.g. '50%'), 'mute', 'unmute', or 'bluetooth'."
@@ -17,26 +14,20 @@
   "git_manager": {
     "description": "Inspects local Git repositories. Actions include 'status' (changed/untracked files), 'log' (recent commit history), 'branch' (all branches), and 'diff' (unstaged diff stat). Accepts 'path' for any local project directory."
   },
-  "sys_exec": {
-    "description": "Safely executes a bash shell command (e.g. system commands, cli queries) with a 15-second timeout and returns exit code, stdout, and stderr."
-  },
-  "take_screenshot": {
-    "description": "Captures a desktop screenshot and saves it as an image file. Automatically delivers the captured photo to Telegram."
-  },
-  "web_screenshot": {
-    "description": "Visits a website URL and captures a screenshot of the webpage using headless browser. Automatically delivers the photo."
-  },
-  "web_search": {
-    "description": "Performs a live web search for a query and returns titles, URLs, and text snippets of top search results."
+  "system_monitor": {
+    "description": "Proactive health monitoring: reports CPU load, memory usage, disk stats, battery percentage, uptime, resource alerts, and top 5 memory/CPU consuming processes."
   },
   "run_tesseract_ocr": {
     "description": "Runs Tesseract OCR on a given image file path to extract and return readable text."
   },
-  "list_flatpak_apps": {
-    "description": "Lists installed Flatpak applications on the system."
+  "take_screenshot": {
+    "description": "Captures a desktop screenshot and saves it as an image file. Automatically delivers the captured photo to Telegram."
   },
-  "open_zen_browser": {
-    "description": "Launches the Zen Browser Flatpak on the host desktop."
+  "fs_list": {
+    "description": "Lists files and subdirectories inside a directory path, providing names, types, and sizes. Accepts relative paths or ~."
+  },
+  "fs_read": {
+    "description": "Reads and prints the text content of any file up to 10,000 characters. Resolves relative paths or ~."
   },
   "delete_screenshots": {
     "description": "Cleans up temporary screenshot files from Pictures/Screenshots and /tmp."

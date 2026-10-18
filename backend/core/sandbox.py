@@ -39,14 +39,19 @@ def resolve_path(p: str) -> str:
     return os.path.join(os.path.expanduser("~"), p.lstrip("/\\"))
 ```
 
-3. DO NOT swallow exceptions with try...except that print an error and exit 0! Let exceptions raise naturally OR print to sys.stderr and call sys.exit(1) so the self-debugger can see the full Python traceback and fix the code.
+3. SAFE DEFAULTS (NO CRASH ON EMPTY ARGS):
+Your script MUST execute cleanly when called with empty input `{}`. Provide sensible default values for all parameters. NEVER call `sys.exit(1)` or crash with KeyError simply because an argument key wasn't passed.
+If no parameters are provided, perform default status reporting or return a clean JSON error response without non-zero exit codes.
 
-4. For Linux system tasks:
-- Audio/Media: Use playerctl (if installed) or wpctl / pactl via subprocess.check_output.
+4. NO INTERACTIVE SUDO:
+Never call commands requiring interactive root/sudo password (like `sudo apt`). If a tool needs elevated privileges, report it in the JSON output cleanly.
+
+5. For Linux system tasks:
+- Audio/Media: Use wpctl or pactl via subprocess.check_output. Ensure env sets XDG_RUNTIME_DIR=/run/user/<uid> and DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus.
 - Hardware/System: Read /proc, /sys, shutil, psutil, or standard CLI utilities (df, free, ip, lsblk, upower).
 
-5. Print ONLY the clean final result (JSON or clear text) to stdout.
-6. Return ONLY valid Python code inside ```python ... ``` fences."""
+6. Print ONLY the clean final result (JSON or clear text) to stdout.
+7. Return ONLY valid Python code inside ```python ... ``` fences."""
 
 # Map commonly imported module names to their PyPI package names
 COMMON_PACKAGE_MAP = {

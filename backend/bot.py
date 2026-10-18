@@ -4,6 +4,7 @@ import html
 import json
 import base64
 import asyncio
+import httpx
 from telegram import Update
 import telegram.error
 from telegram.request import HTTPXRequest
@@ -14,6 +15,7 @@ from core.router import generate
 from core.database import load_local_manifest
 from core.sandbox import run_tool, create_and_run_tool
 from core.memory import add_message, format_history_context, clear_session, get_history, save_upload_image
+from core.watchdog import watchdog
 from main import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, _parse_json
 
 IMAGE_FILTER = (
@@ -287,21 +289,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 print(f"[Telegram Bot] Step {step_count}: Running '{t_name}' with {tool_args}", flush=True)
                 success, output = run_tool(t_name, tool_args)
                 print(f"[Telegram Bot] Step {step_count}: Tool '{t_name}' success={success} (output {len(output)} chars)", flush=True)
+                tool_trace.append({"tool": t_name, "args": tool_args, "output": output if success else f"TOOL ERROR: {output}"})
+                combined_raw.append(f"[{t_name}]:\n{output}")
                 if success:
-                    tool_trace.append({"tool": t_name, "args": tool_args, "output": output})
-                    combined_raw.append(f"[{t_name}]:\n{output}")
                     img = extract_image_from_tool_output(output)
                     if img and img not in images_collected:
                         images_collected.append(img)
-                    continue
                 else:
                     try:
-                        await status_msg.edit_text(f"⚠️ Step {step_count}: `{t_name}` failed, adapting...", parse_mode="Markdown")
+                        await status_msg.edit_text(f"⚠️ Step {step_count}: `{t_name}` error, re-planning...", parse_mode="Markdown")
                     except Exception:
                         pass
-                    action = "MAKE_TOOL"
-                    decision["description"] = f"Fix tool '{t_name}' to fulfill: {user_prompt}"
-                    decision["tool_name"] = f"fix_{t_name}"
+                continue
 
             if action == "MAKE_TOOL":
                 t_name = decision.get("tool_name", "custom_tool")
@@ -420,6 +419,54 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await update.message.reply_text(f"⚠️ Vision analysis error: {str(e)}")
 
+async def transcribe_voice(audio_bytes: bytearray, filename: str = "voice.ogg") -> str:
+    """Transcribes audio using Groq Whisper API in <1 second."""
+    if not Config.GROQ_API_KEY:
+        raise ValueError("GROQ_API_KEY is not configured for voice transcription.")
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {Config.GROQ_API_KEY}"}
+    files = {"file": (filename, bytes(audio_bytes), "audio/ogg")}
+    data = {"model": "whisper-large-v3-turbo"}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, headers=headers, files=files, data=data)
+        resp.raise_for_status()
+        return resp.json().get("text", "").strip()
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not (update.message.voice or update.message.audio):
+        return
+    if not await is_authorized(update):
+        return
+
+    chat_id = str(update.effective_chat.id)
+    voice_obj = update.message.voice or update.message.audio
+    print(f"[Telegram Bot] Received voice note from {chat_id} (duration: {getattr(voice_obj, 'duration', 0)}s)", flush=True)
+    status_msg = await update.message.reply_text("🎙️ Transcribing voice note with Whisper...")
+
+    try:
+        f = await voice_obj.get_file()
+        audio_bytes = await f.download_as_bytearray()
+        transcribed_text = await transcribe_voice(audio_bytes, filename=f"voice_{chat_id}.ogg")
+        if not transcribed_text:
+            await status_msg.edit_text("⚠️ Could not detect speech in the audio note.")
+            return
+
+        print(f"[Telegram Bot] Transcribed voice: {transcribed_text!r}", flush=True)
+        try:
+            await status_msg.edit_text(f"🗣️ *Transcribed:* \"_{transcribed_text}_\"\n\n🤔 Routing request...", parse_mode="Markdown")
+        except Exception:
+            pass
+
+        # Update message text to run through standard agent loop
+        update.message.text = transcribed_text
+        await handle_message(update, context)
+    except Exception as e:
+        print(f"[Telegram Bot] Voice note error: {e}", flush=True)
+        try:
+            await status_msg.edit_text(f"⚠️ Voice note transcription failed: {e}")
+        except Exception:
+            await update.message.reply_text(f"⚠️ Voice note transcription failed: {e}")
+
 def main():
     token = Config.TELEGRAM_BOT_TOKEN
     if not token:
@@ -433,6 +480,9 @@ def main():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+    async def post_init(application) -> None:
+        asyncio.create_task(watchdog.run(application.bot, Config.TELEGRAM_ALLOWED_USERS))
+
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         if isinstance(context.error, telegram.error.NetworkError):
             print(f"[Telegram Bot] Network glitch: {context.error}", flush=True)
@@ -440,10 +490,11 @@ def main():
         print(f"[Telegram Bot] Warning: {context.error}", flush=True)
 
     request = HTTPXRequest(connect_timeout=30.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=60.0)
-    app = ApplicationBuilder().token(token).request(request).build()
+    app = ApplicationBuilder().token(token).request(request).post_init(post_init).build()
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_chat))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(IMAGE_FILTER, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 

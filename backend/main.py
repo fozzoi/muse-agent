@@ -27,20 +27,24 @@ Return ONLY a valid JSON object matching ONE of these 4 actions:
 1. EXECUTE A TOOL (Next step in your plan):
 {"action": "USE_TOOL", "tool_name": "exact_name_from_available_tools", "args": {"key": "value"}}
 Common tools:
+- sys_exec: Safely run any bash shell command (e.g. ps, uptime, curl, cli queries): {"command": "..."}
+- browser_agent: Automated browser navigation, scraping, clicking, typing, and authenticated web tasks: {"action": "navigate|scrape|screenshot|click|type", "url": "..."}
+- web_search: Searches the web for live information, news, links: {"query": "..."}
+- media_control: Controls audio volume, mute, WirePlumber sinks, and Bluetooth: {"action": "status|volume_up|volume_down|mute"}
+- git_manager: Inspects git repositories (status, log, diff, branch): {"action": "status|log|branch", "path": "..."}
+- system_monitor: Proactive health monitor (CPU, RAM %, Disks, Top processes, Battery): {}
 - fs_list: Lists files & directories in a path: {"path": "..."}
 - fs_read: Reads file text content: {"path": "..."}
-- sys_info: Returns CPU, RAM, disk, uptime: {}
 - take_screenshot: Captures desktop screenshot: {}
-- web_screenshot: Captures webpage screenshot: {"url": "..."}
-- web_search: Searches the web for news, reviews, information: {"query": "..."}
+- run_tesseract_ocr: Extracts text from images/screenshots: {"path": "..."}
 
 2. COMPLETE (All necessary info collected, ready to answer):
 {"action": "FINISH"}
 Use this when previous tool steps have gathered everything needed to answer the user request.
 
-3. CREATE NEW TOOL (Only if capability is truly missing):
+3. CREATE NEW TOOL (Strict Last Resort):
 {"action": "MAKE_TOOL", "tool_name": "short_snake_case_name", "description": "Specification of what the script must do", "args": {}}
-ONLY use this if a required core capability does NOT exist in the available tools and CANNOT be achieved by chaining existing tools (e.g. fs_list + fs_read, or web_search + web_screenshot).
+CRITICAL: NEVER create a new tool for tasks that can be solved by running a terminal command with 'sys_exec', or by chaining existing tools! Only use MAKE_TOOL for complex new Python algorithmic libraries that do not exist.
 
 4. DIRECT CONVERSATION (No tools needed):
 {"action": "DIRECT"}
@@ -240,18 +244,15 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                     }
 
                     success, output = run_tool(t_name, tool_args)
+                    tool_trace.append({"tool": t_name, "args": tool_args, "output": output if success else f"TOOL ERROR: {output}"})
+                    combined_raw.append(f"[{t_name}]:\n{output}")
                     if success:
-                        tool_trace.append({"tool": t_name, "args": tool_args, "output": output})
-                        combined_raw.append(f"[{t_name}]:\n{output}")
                         img = extract_image_path(output)
                         if img and img not in images_collected:
                             images_collected.append(img)
-                        continue
                     else:
-                        yield {"event": "status", "data": json.dumps({"step": f"Tool '{t_name}' failed, repairing..."})}
-                        action = "MAKE_TOOL"
-                        decision["description"] = f"Fix tool '{t_name}' to fulfill: {prompt}"
-                        decision["tool_name"] = f"fix_{t_name}"
+                        yield {"event": "status", "data": json.dumps({"step": f"Tool '{t_name}' returned error, re-planning..."})}
+                    continue
 
                 if action == "MAKE_TOOL":
                     t_name = decision.get("tool_name", "custom_tool")
