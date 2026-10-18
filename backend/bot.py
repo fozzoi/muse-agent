@@ -265,7 +265,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if action == "DIRECT":
                 if not tool_trace:
-                    ans = await generate("chat", user_prompt, system=TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, history=get_history(session_id, limit=10))
+                    direct_sys = f"{TELEGRAM_SYNTHESIS_SYSTEM_PROMPT}\n\nYour active local tools in tools/manifest.json:\n{json.dumps(manifest, indent=2)}"
+                    ans = await generate("chat", user_prompt, system=direct_sys, history=get_history(session_id, limit=10))
                     add_message(session_id, "user", user_prompt)
                     add_message(session_id, "assistant", ans["text"])
                     await deliver_response(update, status_msg, ans["text"])

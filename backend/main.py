@@ -217,7 +217,8 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
 
                 if action == "DIRECT":
                     if not tool_trace:
-                        ans = await generate("chat", prompt, system=SYNTHESIS_SYSTEM_PROMPT, history=get_history(session, limit=10))
+                        direct_sys = f"{SYNTHESIS_SYSTEM_PROMPT}\n\nYour active local tools in tools/manifest.json:\n{json.dumps(manifest, indent=2)}"
+                        ans = await generate("chat", prompt, system=direct_sys, history=get_history(session, limit=10))
                         add_message(session, "user", prompt)
                         add_message(session, "assistant", ans["text"])
                         yield {"event": "result", "data": json.dumps({"text": ans["text"], "model": f"{ans['provider']}/{ans['model']}"})}
