@@ -1,12 +1,12 @@
 {
   "desktop_navigator": {
-    "description": "Control the user's REAL visible desktop screen, mouse, and keyboard. Use this when the user mentions their screen, wants to click an open Chrome/YouTube window, or play media. Actions: 'find_and_click' (args: {'target_text': 'song or button name'}), 'click' (args: {'x': 100, 'y': 200}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return'})."
+    "description": "Control the user's REAL visible desktop screen, mouse, and keyboard. Actions: 'focus' (args: {'text': 'chrome' or 'zen'}), 'click' (args: {'x': 100, 'y': 200}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return' or 'space'}), 'find_and_click' (args: {'target_text': 'song or button'}), 'minimize' (args: {})."
   },
   "browser_agent": {
     "description": "SILENT HEADLESS background browser. Use ONLY for silent background web scraping or data extraction where the user DOES NOT need to see the screen or hear playback. DO NOT use when interacting with the user's open desktop windows."
   },
   "take_screenshot": {
-    "description": "Captures the active Linux desktop display to inspect what windows, videos, or apps are currently visible."
+    "description": "Captures the active Linux desktop display and automatically runs AI vision analysis to report visible windows, UI elements, and coordinates. Call at most ONCE to inspect the screen before taking action, and ONCE at the end to confirm."
   },
   "sys_exec": {
     "description": "Safely executes a bash shell command (e.g. system commands, cli queries, process checks) with a 15-second timeout and returns exit code, stdout, and stderr."
@@ -22,9 +22,6 @@
   },
   "system_monitor": {
     "description": "Proactive health monitoring: reports CPU load, memory usage, disk stats, battery percentage, uptime, resource alerts, and top 5 memory/CPU consuming processes."
-  },
-  "run_tesseract_ocr": {
-    "description": "Runs Tesseract OCR on a given image file path to extract and return readable text."
   },
   "fs_list": {
     "description": "Lists files and subdirectories inside a directory path, providing names, types, and sizes. Accepts relative paths or ~."

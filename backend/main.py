@@ -1,6 +1,7 @@
 import re
 import os
 import json
+import base64
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,11 +23,15 @@ ROUTER_SYSTEM_PROMPT = """You are the Lead Orchestrator for Muse on Ubuntu Linux
 Analyze the user request, recent conversation history, and available tools.
 
 ROUTING RULES FOR BROWSER & DESKTOP:
-1. DESKTOP / VISIBLE MEDIA CONTROL:
-   - If the user asks to play a song/video, click something visible, navigate their open Chrome/YouTube window, or interact with an active desktop application:
-   - NEVER use `browser_agent`.
-   - First use `take_screenshot` if you need to inspect the screen.
-   - Use `desktop_navigator` with action='find_and_click' (passing target_text) or action='type'/'key' to interact with the real window.
+1. DESKTOP / VISIBLE MEDIA CONTROL (EFFICIENT 3-STEP FLOW):
+   - Step 1 (Inspect Screen): Call `take_screenshot` ONCE. The AI Vision model will automatically analyze the active screen and return the active window, visible UI elements, and key coordinates.
+   - NEVER call `run_tesseract_ocr`. `take_screenshot` ALREADY runs AI vision directly on the image!
+   - Step 2 (Focus & Execute): Read `ai_vision_analysis`.
+     * If the target app (e.g. Chrome, YouTube, Zen) is NOT visible or in the background: You MUST first focus or launch it: `desktop_navigator` (action='focus', text='google-chrome' or 'zen') or `sys_exec: google-chrome "https://www.youtube.com"`.
+     * Once focused, execute the action (e.g. `desktop_navigator` action='type', text='...', or action='key', text='Return', or action='click', x=..., y=...).
+   - Step 3 (Confirm): Call `take_screenshot` ONCE to confirm the result.
+   - Step 4: Emit {"action": "FINISH"}.
+   - CRITICAL LIMIT: Max 2 screenshots total per turn (1 to inspect, 1 to confirm). NEVER take 3 or 4 screenshots for nothing!
 
 2. SILENT BACKGROUND SCRAPING:
    - Use `browser_agent` ONLY when the user explicitly requests silent web data extraction, scraping, or reading web pages in the background where the user DOES NOT need to see the screen or hear playback.
@@ -37,9 +42,9 @@ Return ONLY a valid JSON object matching ONE of these actions:
 1. EXECUTE A TOOL (Next step in your plan):
 {"action": "USE_TOOL", "tool_name": "exact_name_from_available_tools", "args": {"key": "value"}}
 Common tools:
-- desktop_navigator: Control user's REAL visible desktop screen, mouse, and keyboard. Use when interacting with desktop windows, Chrome, YouTube, or clicking visible elements. Actions: 'find_and_click' (args: {'target_text': 'song or button'}), 'click' (args: {'x': 100, 'y': 200}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return'}).
+- desktop_navigator: Control user's REAL visible desktop screen, mouse, and keyboard. Actions: 'focus' (args: {'text': 'chrome' or 'zen'}), 'click' (args: {'x': 100, 'y': 200}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return' or 'space'}), 'find_and_click' (args: {'target_text': 'exact title or button'}), 'minimize' (args: {}).
 - browser_agent: SILENT HEADLESS background browser. Use ONLY for silent background scraping or data extraction where user does not need to see screen or hear playback. NEVER use for desktop media/visible windows: {"action": "navigate|scrape|click|type", "url": "..."}
-- take_screenshot: Captures active Linux desktop display to inspect what windows, videos, or apps are currently visible: {}
+- take_screenshot: Captures active Linux desktop display and automatically runs AI vision analysis to report visible windows, UI elements, and coordinates. Call at most ONCE to inspect the screen before taking action, and ONCE at the end to confirm: {}
 - sys_exec: Safely run any bash shell command (e.g. ps, uptime, curl, cli queries): {"command": "..."}
 - web_search: Searches the web for live information, news, links: {"query": "..."}
 - media_control: Controls audio volume, mute, WirePlumber sinks, and Bluetooth: {"action": "status|volume_up|volume_down|mute"}
@@ -47,7 +52,6 @@ Common tools:
 - system_monitor: Proactive health monitor (CPU, RAM %, Disks, Top processes, Battery): {}
 - fs_list: Lists files & directories in a path: {"path": "..."}
 - fs_read: Reads file text content: {"path": "..."}
-- run_tesseract_ocr: Extracts text from images/screenshots: {"path": "..."}
 
 2. COMPLETE (All necessary info collected, ready to answer):
 {"action": "FINISH"}
@@ -376,6 +380,32 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                     }
 
                     success, output = run_tool(t_name, tool_args)
+                    if t_name == "take_screenshot" and success:
+                        img_path = extract_image_path(output)
+                        if img_path and os.path.isfile(img_path):
+                            vis_prompt = (
+                                f"You are the visual cortex for Muse Agent on Ubuntu Linux desktop.\n"
+                                f"The user's current request is: '{prompt}'\n"
+                                f"Analyze this active desktop screenshot carefully:\n"
+                                f"1. What application/window is currently focused and active?\n"
+                                f"2. Is the requested application (e.g. Google Chrome, YouTube, Zen Browser) visible on screen? Where is it located?\n"
+                                f"3. What are the key UI elements visible (e.g. search bars, video cards, play buttons, tabs) and their approximate screen coordinates (X, Y)?\n"
+                                f"4. What specific action should the agent take next (e.g. 'Launch or focus Google Chrome first because only VS Code is visible', or 'Click YouTube search bar at (600, 140)')?\n"
+                                f"Be concise, technical, and actionable."
+                            )
+                            try:
+                                with open(img_path, "rb") as f:
+                                    b64 = base64.b64encode(f.read()).decode("utf-8")
+                                vis_res = await generate("vision", vis_prompt, image_data=b64, mime_type="image/png")
+                                vis_analysis = vis_res.get("text", "")
+                                output = json.dumps({
+                                    "status": "success",
+                                    "file": img_path,
+                                    "ai_vision_analysis": vis_analysis
+                                })
+                            except Exception as ve:
+                                print(f"[Main] Vision analysis error on screenshot: {ve}", flush=True)
+
                     tool_trace.append({"tool": t_name, "args": tool_args, "output": output if success else f"TOOL ERROR: {output}"})
                     combined_raw.append(f"[{t_name}]:\n{output}")
                     if success:

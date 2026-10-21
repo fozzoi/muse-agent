@@ -10,22 +10,68 @@ import json
 import time
 import subprocess
 
+KEY_MAP = {
+    "enter": ["28:1", "28:0"],
+    "return": ["28:1", "28:0"],
+    "space": ["57:1", "57:0"],
+    "tab": ["15:1", "15:0"],
+    "backspace": ["14:1", "14:0"],
+    "esc": ["1:1", "1:0"],
+    "escape": ["1:1", "1:0"],
+    "super": ["125:1", "125:0"],
+    "ctrl+l": ["29:1", "38:1", "38:0", "29:0"],
+    "ctrl+t": ["29:1", "20:1", "20:0", "29:0"],
+    "ctrl+w": ["29:1", "17:1", "17:0", "29:0"],
+    "alt+f9": ["56:1", "67:1", "67:0", "56:0"],
+    "alt+f4": ["56:1", "62:1", "62:0", "56:0"],
+}
+
 def get_env():
     env = os.environ.copy()
-    env.setdefault("YDOTOOL_SOCKET", "/tmp/.ydotool_socket")
-    env.setdefault("DISPLAY", ":0")
     uid = os.getuid()
+    candidates = [
+        os.environ.get("YDOTOOL_SOCKET", ""),
+        f"/run/user/{uid}/.ydotool_socket",
+        "/tmp/.ydotool_socket",
+        f"/run/user/{uid}/ydotool_socket",
+    ]
+    sock = None
+    for c in candidates:
+        if c and os.path.exists(c):
+            sock = c
+            break
+    if not sock:
+        sock = f"/run/user/{uid}/.ydotool_socket"
+    env["YDOTOOL_SOCKET"] = sock
+    env.setdefault("DISPLAY", ":0")
     env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
     env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
     return env
 
 def capture_screen() -> str:
-    """Captures a screenshot of the active desktop screen, saving it to ~/Pictures/Screenshots or /tmp."""
+    """Captures a screenshot of the active desktop screen, reusing recent shots to avoid extra prompts."""
     screen_dir = os.path.expanduser("~/Pictures/Screenshots")
     os.makedirs(screen_dir, exist_ok=True)
-    shot_path = os.path.join(screen_dir, f"desktop_nav_{int(time.time())}.png")
 
-    # 1. Primary: pyscreenshot (Wayland portals & X11)
+    # First check: Was a screenshot taken in the last 15 seconds? Reuse it!
+    candidates = []
+    for cand_dir in [screen_dir, "/tmp"]:
+        if os.path.isdir(cand_dir):
+            for f in os.listdir(cand_dir):
+                if f.endswith(".png"):
+                    fp = os.path.join(cand_dir, f)
+                    try:
+                        mtime = os.path.getmtime(fp)
+                        sz = os.path.getsize(fp)
+                        if sz > 15000 and (time.time() - mtime < 15):
+                            candidates.append((fp, mtime))
+                    except Exception:
+                        pass
+    if candidates:
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]
+
+    shot_path = os.path.join(screen_dir, f"desktop_nav_{int(time.time())}.png")
     try:
         import pyscreenshot as ImageGrab
         img = ImageGrab.grab()
@@ -34,38 +80,6 @@ def capture_screen() -> str:
             return shot_path
     except Exception:
         pass
-
-    # 2. Fallback: mss
-    try:
-        import mss
-        with mss.MSS() as sct:
-            sct.shot(output=shot_path)
-        if os.path.exists(shot_path) and os.path.getsize(shot_path) > 15000:
-            return shot_path
-    except Exception:
-        pass
-
-    # 3. Fallback: PIL ImageGrab
-    try:
-        from PIL import ImageGrab as PilGrab
-        img = PilGrab.grab()
-        img.save(shot_path)
-        if os.path.exists(shot_path) and os.path.getsize(shot_path) > 15000:
-            return shot_path
-    except Exception:
-        pass
-
-    # 4. Search existing recent screenshots
-    for cand_dir in [screen_dir, "/tmp"]:
-        if os.path.isdir(cand_dir):
-            for f in sorted(os.listdir(cand_dir), reverse=True):
-                if f.endswith(".png"):
-                    fp = os.path.join(cand_dir, f)
-                    try:
-                        if os.path.getsize(fp) > 15000:
-                            return fp
-                    except Exception:
-                        pass
 
     return shot_path
 
@@ -109,7 +123,7 @@ def run_action(action: str, x: int = 0, y: int = 0, text: str = "") -> dict:
 
     if action in ("click", "left_click"):
         ydotool_cmds = [
-            ["ydotool", "mousemove", "-w", str(x), str(y)],
+            ["ydotool", "mousemove", "-a", "-x", str(x), "-y", str(y)],
             ["ydotool", "click", "0xC0"],
         ]
         xdotool_cmd = ["xdotool", "mousemove", str(x), str(y), "click", "1"]
@@ -123,7 +137,7 @@ def run_action(action: str, x: int = 0, y: int = 0, text: str = "") -> dict:
 
     elif action in ("double_click", "dblclick"):
         ydotool_cmds = [
-            ["ydotool", "mousemove", "-w", str(x), str(y)],
+            ["ydotool", "mousemove", "-a", "-x", str(x), "-y", str(y)],
             ["ydotool", "click", "0xC0"],
             ["ydotool", "click", "0xC0"],
         ]
@@ -137,7 +151,7 @@ def run_action(action: str, x: int = 0, y: int = 0, text: str = "") -> dict:
         }
 
     elif action in ("mousemove", "move"):
-        ydotool_cmds = [["ydotool", "mousemove", "-w", str(x), str(y)]]
+        ydotool_cmds = [["ydotool", "mousemove", "-a", "-x", str(x), "-y", str(y)]]
         xdotool_cmd = ["xdotool", "mousemove", str(x), str(y)]
         ok = _exec_input(ydotool_cmds, xdotool_cmd)
         return {
@@ -163,7 +177,11 @@ def run_action(action: str, x: int = 0, y: int = 0, text: str = "") -> dict:
     elif action in ("key", "keypress", "press"):
         if not text:
             return {"status": "error", "message": "No key provided to press"}
-        ydotool_cmds = [["ydotool", "key", text]]
+        k_lower = text.lower()
+        if k_lower in KEY_MAP:
+            ydotool_cmds = [["ydotool", "key"] + KEY_MAP[k_lower]]
+        else:
+            ydotool_cmds = [["ydotool", "key", text]]
         xdotool_cmd = ["xdotool", "key", text]
         ok = _exec_input(ydotool_cmds, xdotool_cmd)
         return {
@@ -172,6 +190,29 @@ def run_action(action: str, x: int = 0, y: int = 0, text: str = "") -> dict:
             "key": text,
             "message": f"Pressed key '{text}'" if ok else "Failed to press key",
         }
+
+    elif action in ("focus", "focus_window", "open_app", "launch"):
+        target = text.lower() if text else "chrome"
+        if "chrome" in target:
+            try:
+                subprocess.Popen(["google-chrome", "https://www.youtube.com" if "youtube" in target else ""])
+                time.sleep(1)
+                return {"status": "success", "action": "focus", "message": "Brought Google Chrome to foreground"}
+            except Exception as e:
+                return {"status": "error", "message": f"Failed to launch Chrome: {e}"}
+        elif "zen" in target:
+            try:
+                subprocess.Popen(["zen-browser"])
+                time.sleep(1)
+                return {"status": "success", "action": "focus", "message": "Brought Zen Browser to foreground"}
+            except Exception as e:
+                return {"status": "error", "message": f"Failed to launch Zen: {e}"}
+        else:
+            try:
+                subprocess.run(["wmctrl", "-a", text], capture_output=True, timeout=2)
+                return {"status": "success", "action": "focus", "message": f"Focused window '{text}'"}
+            except Exception as e:
+                return {"status": "error", "message": f"Failed to focus window: {e}"}
 
     elif action in ("minimize", "window_minimize", "hide"):
         # Use GNOME Wayland shortcut (Alt+F9 or Super+h) or wmctrl (NEVER use pkill!)
@@ -241,8 +282,9 @@ def find_and_click_text(target_text: str) -> dict:
         word = data["text"][i].strip().lower()
         if not word:
             continue
-        # Exact match or substantial substring match (avoid false positives on 1-2 char words)
-        if word == target_lower or target_lower in word or (len(word) >= 3 and word in target_lower):
+        # Exact match or target phrase is inside the word (e.g. "youtube" in "youtube.com")
+        # NEVER match if word is just an arbitrary small substring of target_text (avoids false positive clicks on "out", "you", etc.)
+        if word == target_lower or target_lower in word:
             x = data["left"][i] + (data["width"][i] // 2)
             y = data["top"][i] + (data["height"][i] // 2)
             click_res = run_action("click", x=x, y=y)

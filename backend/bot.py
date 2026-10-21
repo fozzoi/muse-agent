@@ -456,6 +456,34 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 success, output = run_tool(t_name, tool_args)
                 print(f"[Telegram Bot] Step {step_count}: Tool '{t_name}' success={success} (output {len(output)} chars)", flush=True)
 
+                if t_name == "take_screenshot" and success:
+                    img_path = extract_image_from_tool_output(output)
+                    if img_path and os.path.isfile(img_path):
+                        await safe_edit_text(status_msg, f"👁️ Step {step_count}: Analyzing screen visually with AI...", parse_mode="Markdown")
+                        vis_prompt = (
+                            f"You are the visual cortex for Muse Agent on Ubuntu Linux desktop.\n"
+                            f"The user's current request is: '{user_prompt}'\n"
+                            f"Analyze this active desktop screenshot carefully:\n"
+                            f"1. What application/window is currently focused and active?\n"
+                            f"2. Is the requested application (e.g. Google Chrome, YouTube, Zen Browser) visible on screen? Where is it located?\n"
+                            f"3. What are the key UI elements visible (e.g. search bars, video cards, play buttons, tabs) and their approximate screen coordinates (X, Y)?\n"
+                            f"4. What specific action should the agent take next (e.g. 'Launch or focus Google Chrome first because only VS Code is visible', or 'Click YouTube search bar at (600, 140)')?\n"
+                            f"Be concise, technical, and actionable."
+                        )
+                        try:
+                            with open(img_path, "rb") as f:
+                                b64 = base64.b64encode(f.read()).decode("utf-8")
+                            vis_res = await generate("vision", vis_prompt, image_data=b64, mime_type="image/png")
+                            vis_analysis = vis_res.get("text", "")
+                            output = json.dumps({
+                                "status": "success",
+                                "file": img_path,
+                                "ai_vision_analysis": vis_analysis
+                            })
+                            print(f"[Telegram Bot] Step {step_count}: AI Vision analyzed screenshot ({len(vis_analysis)} chars)", flush=True)
+                        except Exception as ve:
+                            print(f"[Telegram Bot] Vision analysis error on screenshot: {ve}", flush=True)
+
                 # Check if tool indicates authentication is missing
                 try:
                     p_out = json.loads(output)
