@@ -2,6 +2,7 @@ import re
 import os
 import json
 import base64
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,8 +16,6 @@ from core.database import load_local_manifest, save_local_manifest, sync_tools_f
 from core.sandbox import run_tool, create_and_run_tool
 from core.memory import add_message, format_history_context, clear_session, load_session, get_history, save_upload_image, copy_file_to_uploads, extract_image_path, UPLOADS_DIR
 from core.user_profile import get_user_profile_context, load_profile
-from core.evolution import reflect_and_evolve
-from core.user_profile import get_user_profile_context
 from core.evolution import reflect_and_evolve
 
 ROUTER_SYSTEM_PROMPT = """You are the Lead Orchestrator for Muse on Ubuntu Linux with direct system access via tools/.
