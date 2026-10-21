@@ -20,7 +20,7 @@ from core.memory import add_message, format_history_context, clear_session, get_
 from core.watchdog import watchdog
 from core.user_profile import get_user_profile_context, format_profile_for_telegram, add_learned_rule, add_memory
 from core.evolution import reflect_and_evolve
-from core.quota_manager import get_all_cooldowns
+from core.quota_manager import get_all_cooldowns, get_model_operational_summary
 from main import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, _parse_json
 
 # Module-level variable to hold file handle so it's not garbage-collected
@@ -121,20 +121,47 @@ async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🧠 *Learned:* \"_{fact}_\"\n\nAdded to your persistent profile!", parse_mode="Markdown")
 
 async def quota_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Displays which models are currently banned or cooling down due to 429 quota exhaustion."""
+    """Displays which models are active, out of quota, remaining requests, and available tools."""
     if not await is_authorized(update):
         return
-    cooldowns = get_all_cooldowns()
-    if not cooldowns:
-        await update.message.reply_text("✅ *All Models Operational*\n\nAll AI models across Gemini, Groq, and Mistral are active with zero quota cooldowns!", parse_mode="Markdown")
-        return
 
-    lines = ["⚡ *Active Model Quota & Circuit Breaker Status*", ""]
-    for k, v in cooldowns.items():
-        lines.append(f"• `{k}`: *{v['remaining_human']}* left\n  _({v['reason']})_")
+    summary = get_model_operational_summary()
+    manifest = load_local_manifest()
+    tool_names = list(manifest.keys())
 
-    lines.append("\n👁️ *Active Vision Fallbacks:* `gemini-3.5-flash-lite`, `gemini-2.5-flash`, `pixtral-12b`")
-    lines.append("⚡ *Active Coder Fallbacks:* `codestral-latest`, `gemini-2.5-flash`, `openai/gpt-oss-120b`")
+    lines = [
+        "⚡ *Muse Operational Engine & Quota Status*",
+        "",
+        f"🤖 *Active Engine:* `{summary['active_model']}`",
+    ]
+
+    last_roles = summary.get("last_used_by_role", {})
+    if last_roles:
+        role_items = [f"`{r}`: {m}" for r, m in last_roles.items() if r != "global"]
+        if role_items:
+            lines.append(f"• *Role Routing:* " + ", ".join(role_items))
+
+    lines.append("")
+
+    cooling = summary.get("cooling_models", [])
+    if cooling:
+        lines.append(f"⛔ *Models Out of Quota / Cooling Down ({len(cooling)}):*")
+        for m in cooling:
+            lines.append(f"• `{m['key']}`\n  ⏳ *{m['cooldown_remaining']}* left | 0 reqs left\n  _({m['reason']})_")
+        lines.append("")
+    else:
+        lines.append("✅ *Out of Quota:* None (all models operational)\n")
+
+    healthy = summary.get("healthy_models", [])
+    lines.append(f"🟢 *Active Models & Remaining Requests Today:*")
+    for m in healthy:
+        vis = " 👁️" if m.get("vision") else ""
+        lines.append(f"• `{m['key']}`{vis}: *{m['remaining_requests']}* / {m['daily_limit']} left today ({m['rpm']} RPM)")
+
+    lines.append("")
+    lines.append(f"🛠️ *Available Tools ({len(tool_names)}):*")
+    lines.append("`" + ", ".join(tool_names) + "`")
+
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -371,25 +398,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         while step_count < max_steps:
             step_count += 1
+            tool_names = list(manifest.keys())
+            steps_left = max(0, max_steps - step_count)
+            tools_context = f"LOCAL TOOL REGISTRY: {len(tool_names)} tools loaded ({', '.join(tool_names)})\nEXECUTION BUDGET: Step {step_count} of {max_steps} ({steps_left} steps remaining in this turn)"
+
             if not tool_trace:
                 planner_prompt = (
                     f"{user_profile_context}\n\n"
+                    f"{tools_context}\n\n"
                     f"Conversation History:\n{history_context}\n\n"
-                    f"Available Tools:\n{json.dumps(manifest)}\n\n"
+                    f"Available Tools Schema:\n{json.dumps(manifest)}\n\n"
                     f"Current user request: {user_prompt}"
                 )
             else:
                 steps_summary = "\n".join([
-                    f"- Step {i+1}: Ran '{st['tool']}' with args {st['args']} -> Output:\n{st['output'][:1200]}"
+                    f"- Step {i+1}: Ran '{st['tool']}' with args {st['args']} -> Output & Diagnostics:\n{st['output'] if len(st['output']) <= 3500 else (st['output'][:2000] + '\n...[output truncated]...\n' + st['output'][-1500:])}"
                     for i, st in enumerate(tool_trace)
                 ])
                 planner_prompt = (
                     f"{user_profile_context}\n\n"
+                    f"{tools_context}\n\n"
                     f"Conversation History:\n{history_context}\n\n"
-                    f"Available Tools:\n{json.dumps(manifest)}\n\n"
+                    f"Available Tools Schema:\n{json.dumps(manifest)}\n\n"
                     f"Steps already completed in this turn:\n{steps_summary}\n\n"
                     f"Original User Request: {user_prompt}\n\n"
-                    f"Based on completed steps and output above, decide the next action: USE_TOOL, FINISH, or MAKE_TOOL:"
+                    f"Based on completed steps and output above, decide the next action: USE_TOOL, FINISH, or MAKE_TOOL (Remember: verify desktop/system actions before finishing!):"
                 )
 
             route_res = await generate("router", planner_prompt, system=ROUTER_SYSTEM_PROMPT)
@@ -477,7 +510,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{user_profile_context}\n\n"
             f"User asked: {user_prompt}\n\n"
             f"Executed tool results across steps:\n{steps_context if steps_context else '(No tools were executed)'}\n\n"
-            f"Provide the final structured answer for the user on Telegram."
+            f"Provide the final structured answer for the user on Telegram. Remember: State exact verification evidence truthfully, report any tool errors completely, and never bluff task completion."
         )
         final = await generate(
             "chat",

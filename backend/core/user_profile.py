@@ -33,7 +33,8 @@ DEFAULT_PROFILE = {
         "Never use 'pkill' or 'kill -9' to minimize applications; use GNOME shortcuts (Alt+F9 / Super+h).",
         "Always use desktop_navigator (OCR-guided clicking) for YouTube, music, or active screen interactions.",
         "Headless browser_agent is strictly for silent background web scraping, never for user media playback.",
-        "Primary browser is Zen Browser; Google Chrome is used for active media and YouTube tasks."
+        "Primary browser is Zen Browser; Google Chrome is used for active media and YouTube tasks.",
+        "MANDATORY VERIFICATION: Never claim a desktop/system task is complete without taking a follow-up screenshot or inspecting command output; never bluff or assume success.",
     ],
     "memories": [
         {"timestamp": 1792578500, "fact": "User lives in Nilambur, Kerala."},
@@ -97,8 +98,14 @@ def get_user_profile_context() -> str:
     rules = profile.get("learned_rules", [])
     if rules:
         lines.append("• Critical Behavioral Rules (Avoid repeating past mistakes):")
-        for r in rules[-6:]:
+        for r in rules[-8:]:
             lines.append(f"  - {r}")
+
+    try:
+        from core.quota_manager import format_model_operational_context
+        lines.append("\n" + format_model_operational_context())
+    except Exception as e:
+        print(f"[UserProfile] Could not format model quota context: {e}", flush=True)
 
     return "\n".join(lines)
 

@@ -65,6 +65,13 @@ CRITICAL: NEVER return 'DIRECT'! You MUST emit 'USE_TOOL' (e.g. 'desktop_navigat
 {"action": "DIRECT"}
 Use ONLY for pure chit-chat, greetings, or conceptual questions where NO system, web, or pending task exists.
 
+6. MANDATORY MULTI-MODAL VERIFICATION (NEVER BLUFF COMPLETION):
+   - You MUST NEVER emit {"action": "FINISH"} after performing an action without verifying its real-world outcome!
+   - DESKTOP / GUI / WINDOWS: If you just ran 'desktop_navigator' to click, type, play music, or open/minimize a window, your NEXT step MUST BE 'take_screenshot' to visually verify that the window state or element actually responded on screen.
+   - SYSTEM / PROCESSES / FILES: If you ran a command to create a file, kill a process, or install something, verify with 'sys_exec' (e.g. ps aux, ls -l, which) or 'fs_read'.
+   - BROWSER: Verify the page title, URL, or screenshot.
+   - Only when verification confirms the action, or if verification reveals what actually happened, emit {"action": "FINISH"}.
+
 Note: Always format 'args' as a JSON dictionary. Return raw JSON only."""
 
 SYNTHESIS_SYSTEM_PROMPT = """You are Muse, an autonomous self-extending and self-healing AI agent running locally on the user's Linux machine with direct system access via generated Python tools in tools/.
@@ -78,8 +85,9 @@ CORE IDENTITY & GUIDELINES:
 5. NO FALSE PROMISES OF FUTURE MESSAGES: This response is the ONLY message delivered for this turn. NEVER say "Give me a moment", "Hold on while I pull the data", "I will get back to you", or "I'm working on it now". State the exact completed findings right now, or explain the exact status and next step immediately.
 6. SELF-HEALING & EVOLUTION: You dynamically write your own tools, auto-resolve and install missing libraries, and adapt when errors occur.
 7. ERROR RESOLUTION: If a tool fails or reports '[Errno 2] No such file or directory', explain clearly which path was searched, and suggest the user verify the exact folder name or pass an absolute path.
-8. NO HALLUCINATED TASK COMPLETION: NEVER claim a song/video is playing, a window is closed/minimized, or a task is finished unless the tool actually executed that action successfully. Always report exact execution status truthfully.
-9. TONE: Sharp, technical, concise, helpful, and proactive."""
+8. NO HALLUCINATED TASK COMPLETION / MANDATORY VERIFICATION: NEVER claim a song/video is playing, a window is closed/minimized, or a task is finished unless the tool trace has concrete verification evidence (e.g. follow-up screenshot or process status). If you attempted an action without follow-up verification, explicitly state: "Attempted action X, but unverified on screen/system."
+9. COMPLETE TOOL ERROR TRANSPARENCY: If a tool failed, crashed, or reported an error, NEVER conceal it or pretend success. Explain the exact error, what failed, and the direct next step.
+10. TONE: Sharp, technical, concise, helpful, and proactive."""
 
 TELEGRAM_SYNTHESIS_SYSTEM_PROMPT = """You are Muse, an autonomous self-extending and self-healing AI agent running locally on the user's Linux machine, chatting with the user via Telegram on mobile.
 
@@ -94,7 +102,8 @@ TELEGRAM MOBILE FORMATTING RULES:
 5. CODE & PATHS: Use inline code `path/to/file` or triple-backtick code blocks for scripts or output.
 6. REAL SYSTEM ACCESS: You have direct local filesystem and OS access on Ubuntu Linux. Never claim to be a cloud model.
 7. NEVER ASK FOR TOKENS: You are already speaking inside the Telegram bot. Never ask the user for a Telegram bot token, chat ID, or credentials to send photos or messages.
-8. NO HALLUCINATIONS: NEVER claim a song or video is playing on the user's screen unless desktop_navigator actually clicked it. Report real tool actions honestly."""
+8. NO HALLUCINATIONS / GROUND TRUTH VERIFICATION: NEVER claim a song/video is playing, a window is minimized, or a command worked unless confirmed by tool outputs or screenshots. If unverified, state: "Attempted action X, but unverified on screen."
+9. COMPLETE TOOL ERROR TRANSPARENCY: If a tool crashed or reported an error, tell the user the exact error details and what failed rather than bluffing."""
 
 def _parse_json(text: str) -> dict:
     if not text:
@@ -306,25 +315,31 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
 
             while step_count < max_steps:
                 step_count += 1
+                tool_names = list(manifest.keys())
+                steps_left = max(0, max_steps - step_count)
+                tools_context = f"LOCAL TOOL REGISTRY: {len(tool_names)} tools loaded ({', '.join(tool_names)})\nEXECUTION BUDGET: Step {step_count} of {max_steps} ({steps_left} steps remaining in this turn)"
+
                 if not tool_trace:
                     planner_prompt = (
                         f"{user_profile_context}\n\n"
+                        f"{tools_context}\n\n"
                         f"Conversation History:\n{history_context}\n\n"
-                        f"Available Tools:\n{json.dumps(manifest)}\n\n"
+                        f"Available Tools Schema:\n{json.dumps(manifest)}\n\n"
                         f"User Request: {prompt}"
                     )
                 else:
                     steps_summary = "\n".join([
-                        f"- Step {i+1}: Ran '{st['tool']}' with args {st['args']} -> Output:\n{st['output'][:1200]}"
+                        f"- Step {i+1}: Ran '{st['tool']}' with args {st['args']} -> Output & Diagnostics:\n{st['output'] if len(st['output']) <= 3500 else (st['output'][:2000] + '\n...[output truncated]...\n' + st['output'][-1500:])}"
                         for i, st in enumerate(tool_trace)
                     ])
                     planner_prompt = (
                         f"{user_profile_context}\n\n"
+                        f"{tools_context}\n\n"
                         f"Conversation History:\n{history_context}\n\n"
-                        f"Available Tools:\n{json.dumps(manifest)}\n\n"
+                        f"Available Tools Schema:\n{json.dumps(manifest)}\n\n"
                         f"Steps already completed in this turn:\n{steps_summary}\n\n"
                         f"Original User Request: {prompt}\n\n"
-                        f"Based on completed steps and output above, decide the next action: USE_TOOL, FINISH, or MAKE_TOOL:"
+                        f"Based on completed steps and output above, decide the next action: USE_TOOL, FINISH, or MAKE_TOOL (Remember: always verify desktop/system actions before finishing!):"
                     )
 
                 route_res = await generate("router", planner_prompt, system=ROUTER_SYSTEM_PROMPT)
@@ -395,7 +410,7 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
             steps_context = "\n\n---\n\n".join(combined_raw)
             final = await generate(
                 "chat",
-                f"{user_profile_context}\n\nUser asked: {prompt}\n\nExecuted tool results across steps:\n{steps_context if steps_context else '(No tools were executed)'}\n\nSynthesize a clear, structured, and complete final answer for the user.",
+                f"{user_profile_context}\n\nUser asked: {prompt}\n\nExecuted tool results across steps:\n{steps_context if steps_context else '(No tools were executed)'}\n\nSynthesize a clear, structured, and complete final answer for the user. Remember: State exact verification evidence truthfully, report any tool errors completely, and never bluff task completion.",
                 system=SYNTHESIS_SYSTEM_PROMPT,
                 history=get_history(session, limit=10),
             )

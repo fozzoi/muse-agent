@@ -5,6 +5,7 @@ from core.quota_manager import (
     is_model_on_cooldown,
     record_quota_failure,
     record_success,
+    record_model_call,
     is_daily_quota_error,
     format_remaining_time,
 )
@@ -47,6 +48,8 @@ ROLE_ROUTES = {
         ("gemini", "gemini-3.5-flash"),
         ("gemini", "gemini-3.5-flash-lite"),
         ("gemini", "gemini-2.5-flash"),
+        ("openrouter", "google/gemma-3-27b-it"),
+        ("openrouter", "google/gemma-3-12b-it"),
         ("mistral", "pixtral-12b-2409"),
     ],
 }
@@ -203,12 +206,14 @@ async def generate(
                         history=history,
                     )
                     record_success(provider, model)
+                    record_model_call(provider, model, role)
                     return {"text": text, "provider": provider, "model": model}
 
                 # 2. Gemini (multimodal native)
                 elif provider == "gemini" and Config.GEMINI_API_KEY and not Config.GEMINI_API_KEY.startswith("AIza_your"):
                     text = await _call_gemini(model, prompt, system, image_data=image_data, mime_type=mime_type, history=history)
                     record_success(provider, model)
+                    record_model_call(provider, model, role)
                     return {"text": text, "provider": provider, "model": model}
 
                 # 3. Mistral
@@ -226,6 +231,7 @@ async def generate(
                         history=history,
                     )
                     record_success(provider, model)
+                    record_model_call(provider, model, role)
                     return {"text": text, "provider": provider, "model": model}
 
                 # 4. OpenRouter Free Fallback (multimodal supported)
@@ -241,6 +247,7 @@ async def generate(
                         history=history,
                     )
                     record_success(provider, model)
+                    record_model_call(provider, model, role)
                     return {"text": text, "provider": provider, "model": model}
 
                 break  # Skip to next provider if key is not configured

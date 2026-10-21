@@ -31,7 +31,9 @@ CORRECTION_TRIGGERS = [
     "no ", "not ", "dont", "don't", "never", "instead", "prefer", "u killed", "you killed",
     "why did u", "why did you", "wrong", "stop ", "remember", "from now on", "always ",
     "i live in", "my location", "where i live", "my name", "my browser", "use my", "on my screen",
-    "no no", "not at all", "didnt click", "didn't click", "still not"
+    "no no", "not at all", "didnt click", "didn't click", "still not", "bluff", "fake", "hallucinat",
+    "didnt play", "didn't play", "didnt do", "didn't do", "verify", "did it actually", "not working",
+    "out of quota", "quota", "which model"
 ]
 
 def _has_evolution_signals(user_text: str) -> bool:
