@@ -20,6 +20,9 @@ from core.memory import add_message, format_history_context, clear_session, get_
 from core.watchdog import watchdog
 from main import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, _parse_json
 
+# Module-level variable to hold file handle so it's not garbage-collected
+_LOCK_FILE = None
+
 IMAGE_FILTER = (
     filters.PHOTO
     | filters.Document.IMAGE
@@ -57,11 +60,32 @@ async def is_authorized(update: Update) -> bool:
         )
     return False
 
+async def safe_edit_text(msg, text: str, parse_mode: str | None = None) -> bool:
+    """Safely edits message text, ignoring 'Message is not modified' and network glitches."""
+    if not msg:
+        return False
+    try:
+        await msg.edit_text(text, parse_mode=parse_mode)
+        return True
+    except telegram.error.BadRequest as e:
+        if "Message is not modified" in str(e):
+            return True
+        print(f"[Telegram Bot] Warning updating status message: {e}", flush=True)
+    except Exception as e:
+        print(f"[Telegram Bot] Transient edit error: {e}", flush=True)
+    return False
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
         return
     print(f"[Telegram Bot] /start from {update.effective_chat.id}", flush=True)
-    await update.message.reply_text("Muse Agent is online. Send me any task, question, or send a photo for AI vision analysis! Send /clear to reset memory.")
+    await update.message.reply_text(
+        "👋 Muse Agent is online!\n\n"
+        "• Send tasks, questions, or voice notes\n"
+        "• Send screenshots or photos for vision analysis\n"
+        "• Use /login <url> to authenticate web sessions on desktop\n"
+        "• Use /clear to reset memory"
+    )
 
 async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
@@ -71,20 +95,63 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     clear_session(f"tg_{chat_id}")
     await update.message.reply_text("🧹 Conversation memory cleared!")
 
+async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Triggers the desktop browser window to authenticate a service."""
+    if not await is_authorized(update):
+        return
+
+    target = "https://www.instagram.com/accounts/login/"
+    if context.args:
+        target = context.args[0]
+        if not target.startswith(("http://", "https://")):
+            target = f"https://{target}"
+
+    status_msg = await update.message.reply_text(
+        f"🖥️ *Opening Desktop Login Window*\n\n"
+        f"Target: `{target}`\n"
+        f"Please switch to your screen to complete the login (including 2FA/Captchas).\n\n"
+        f"⏳ Waiting for successful navigation (up to 3 minutes)...",
+        parse_mode="Markdown",
+    )
+
+    # Offload the blocking Playwright execution to a thread
+    loop = asyncio.get_running_loop()
+    success, output = await loop.run_in_executor(
+        None, run_tool, "browser_agent", {"action": "setup_login", "url": target}
+    )
+
+    try:
+        data = json.loads(output)
+        if data.get("status") == "success":
+            await safe_edit_text(
+                status_msg,
+                f"✅ *Login Completed!*\n\n"
+                f"Session cookies are permanently saved for `{target}`.\n"
+                f"You can now run tasks headlessly from Telegram!",
+                parse_mode="Markdown",
+            )
+        else:
+            await safe_edit_text(
+                status_msg,
+                f"❌ *Login Session Failed or Timed Out*\n\n`{data.get('error', output)}`",
+                parse_mode="Markdown",
+            )
+    except Exception:
+        await safe_edit_text(status_msg, f"ℹ️ Result: {output}")
+
 def extract_image_from_tool_output(output: str) -> str | None:
     if not output:
         return None
     try:
         data = json.loads(output)
         if isinstance(data, dict):
-            for k in ("file_path", "image_path", "path", "file", "dest_file"):
+            for k in ("file_path", "image_path", "path", "file", "dest_file", "screenshot"):
                 val = data.get(k)
                 if val and isinstance(val, str):
                     exp = os.path.expanduser(val.strip())
                     if os.path.isfile(exp) and exp.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
                         return exp
 
-            # Check if output_dir with image files was returned
             out_dir = data.get("output_dir")
             if out_dir and isinstance(out_dir, str):
                 exp_dir = os.path.expanduser(out_dir.strip())
@@ -117,11 +184,10 @@ def extract_image_from_tool_output(output: str) -> str | None:
     return None
 
 def markdown_to_telegram_html(md: str) -> str:
-    """Safely converts Markdown into Telegram-compatible HTML, converting tables and headers for mobile."""
+    """Safely converts Markdown into Telegram-compatible HTML."""
     if not md:
         return ""
 
-    # 1. Protect multi-line code blocks
     code_blocks = []
     def save_code_block(match):
         code = match.group(2)
@@ -132,7 +198,6 @@ def markdown_to_telegram_html(md: str) -> str:
 
     text = re.sub(r"```([a-zA-Z0-9_\-\+]*)\n(.*?)```", save_code_block, md, flags=re.DOTALL)
 
-    # 2. Protect inline code
     inline_codes = []
     def save_inline(match):
         c = match.group(1)
@@ -142,10 +207,20 @@ def markdown_to_telegram_html(md: str) -> str:
 
     text = re.sub(r"`([^`\n]+)`", save_inline, text)
 
-    # 3. HTML escape remaining text
+    # Protect Markdown Links [label](url)
+    links = []
+    def save_link(match):
+        label = html.escape(match.group(1))
+        url = html.escape(match.group(2))
+        idx = len(links)
+        links.append(f'<a href="{url}">{label}</a>')
+        return f"__LINK_BLOCK_{idx}__"
+
+    text = re.sub(r"\[([^\]]+)\]\((https?://[^\s\)]+)\)", save_link, text)
+
     text = html.escape(text)
 
-    # 4. Convert markdown tables into clean bulleted list for mobile
+    # Convert tables to bullet points for mobile viewports
     lines = text.split("\n")
     cleaned_lines = []
     for line in lines:
@@ -159,20 +234,16 @@ def markdown_to_telegram_html(md: str) -> str:
             cleaned_lines.append(line)
     text = "\n".join(cleaned_lines)
 
-    # 5. Convert Headers (#, ##, ###) into bold
     text = re.sub(r"^(?:#{1,6})\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
-
-    # 6. Convert Bold (**text**)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-
-    # 7. Convert Italic (*text*)
     text = re.sub(r"(?<!\w)\*([^\*\n]+)\*(?!\w)", r"<i>\1</i>", text)
 
-    # 8. Restore code blocks & inline code
     for i, cb in enumerate(code_blocks):
         text = text.replace(f"__CODE_BLOCK_{i}__", cb)
     for i, ic in enumerate(inline_codes):
         text = text.replace(f"__INLINE_CODE_{i}__", ic)
+    for i, lk in enumerate(links):
+        text = text.replace(f"__LINK_BLOCK_{i}__", lk)
 
     return text
 
@@ -211,7 +282,6 @@ async def deliver_response(update: Update, status_msg, reply_text: str, image_fi
                         await update.message.reply_text(rem_plain[i:i+4000])
             return
 
-    # Text delivery with HTML parsing and plain-text fallback
     if len(html_text) > 4000:
         chunks_html = [html_text[i:i+4000] for i in range(0, len(html_text), 4000)]
         chunks_plain = [reply_text[i:i+4000] for i in range(0, len(reply_text), 4000)]
@@ -291,7 +361,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     ans = await generate("chat", user_prompt, system=direct_sys, history=get_history(session_id, limit=10))
                     add_message(session_id, "user", user_prompt)
                     add_message(session_id, "assistant", ans["text"])
-                    print(f"[Telegram Bot] Direct chat response ({len(ans['text'])} chars) to {chat_id}", flush=True)
                     await deliver_response(update, status_msg, ans["text"])
                     return
                 else:
@@ -300,14 +369,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if action == "USE_TOOL":
                 t_name = decision.get("tool_name", "")
                 tool_args = decision.get("args", {})
-                try:
-                    await status_msg.edit_text(f"⚙️ Step {step_count}: Running `{t_name}`...", parse_mode="Markdown")
-                except Exception:
-                    pass
+                await safe_edit_text(status_msg, f"⚙️ Step {step_count}: Running `{t_name}`...", parse_mode="Markdown")
 
                 print(f"[Telegram Bot] Step {step_count}: Running '{t_name}' with {tool_args}", flush=True)
                 success, output = run_tool(t_name, tool_args)
                 print(f"[Telegram Bot] Step {step_count}: Tool '{t_name}' success={success} (output {len(output)} chars)", flush=True)
+
+                # Check if tool indicates authentication is missing
+                try:
+                    p_out = json.loads(output)
+                    if isinstance(p_out, dict) and p_out.get("status") == "LOGIN_REQUIRED":
+                        await safe_edit_text(
+                            status_msg,
+                            f"🔒 *Authentication Required*\n\n"
+                            f"{p_out.get('notice', 'Please authenticate your session.')}\n\n"
+                            f"Send `/login <service_url>` to open a login window on your desktop.",
+                            parse_mode="Markdown",
+                        )
+                        return
+                except Exception:
+                    pass
+
                 tool_trace.append({"tool": t_name, "args": tool_args, "output": output if success else f"TOOL ERROR: {output}"})
                 combined_raw.append(f"[{t_name}]:\n{output}")
                 if success:
@@ -315,20 +397,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     if img and img not in images_collected:
                         images_collected.append(img)
                 else:
-                    try:
-                        await status_msg.edit_text(f"⚠️ Step {step_count}: `{t_name}` error, re-planning...", parse_mode="Markdown")
-                    except Exception:
-                        pass
+                    await safe_edit_text(status_msg, f"⚠️ Step {step_count}: `{t_name}` error, re-planning...", parse_mode="Markdown")
                 continue
 
             if action == "MAKE_TOOL":
                 t_name = decision.get("tool_name", "custom_tool")
                 t_desc = decision.get("description", user_prompt)
                 tool_args = decision.get("args", {})
-                try:
-                    await status_msg.edit_text(f"🛠️ Synthesizing new tool `{t_name}`...", parse_mode="Markdown")
-                except Exception:
-                    pass
+                await safe_edit_text(status_msg, f"🛠️ Synthesizing new tool `{t_name}`...", parse_mode="Markdown")
 
                 print(f"[Telegram Bot] Step {step_count}: Synthesizing '{t_name}': {t_desc[:80]}", flush=True)
                 build_res = await create_and_run_tool(t_name, t_desc, tool_args)
@@ -343,17 +419,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         images_collected.append(img)
                     break
                 else:
-                    try:
-                        await status_msg.edit_text(f"❌ Tool build failed:\n`{build_res['output']}`", parse_mode="Markdown")
-                    except Exception:
-                        pass
+                    await safe_edit_text(status_msg, f"❌ Tool build failed:\n`{build_res['output']}`", parse_mode="Markdown")
                     return
 
-        # Synthesize final multi-tool response for Telegram
-        try:
-            await status_msg.edit_text("✨ Formatting final response...")
-        except Exception:
-            pass
+        await safe_edit_text(status_msg, "✨ Formatting final response...")
 
         steps_context = "\n\n---\n\n".join(combined_raw)
         final = await generate(
@@ -386,7 +455,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
-
     if not await is_authorized(update):
         return
 
@@ -442,13 +510,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await update.message.reply_text(f"⚠️ Vision analysis error: {str(e)}")
 
-async def transcribe_voice(audio_bytes: bytearray, filename: str = "voice.ogg") -> str:
+async def transcribe_voice(audio_bytes: bytearray, filename: str = "voice.ogg", mime_type: str = "audio/ogg") -> str:
     """Transcribes audio using Groq Whisper API in <1 second."""
     if not Config.GROQ_API_KEY:
         raise ValueError("GROQ_API_KEY is not configured for voice transcription.")
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
     headers = {"Authorization": f"Bearer {Config.GROQ_API_KEY}"}
-    files = {"file": (filename, bytes(audio_bytes), "audio/ogg")}
+    files = {"file": (filename, bytes(audio_bytes), mime_type)}
     data = {"model": "whisper-large-v3-turbo"}
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(url, headers=headers, files=files, data=data)
@@ -463,39 +531,38 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = str(update.effective_chat.id)
     voice_obj = update.message.voice or update.message.audio
-    print(f"[Telegram Bot] Received voice note from {chat_id} (duration: {getattr(voice_obj, 'duration', 0)}s)", flush=True)
-    status_msg = await update.message.reply_text("🎙️ Transcribing voice note with Whisper...")
+    mime = getattr(voice_obj, "mime_type", "audio/ogg") or "audio/ogg"
+    ext = "ogg" if "ogg" in mime else ("mp3" if "mp3" in mime else "m4a")
+
+    print(f"[Telegram Bot] Received voice note from {chat_id} (mime: {mime})", flush=True)
+    status_msg = await update.message.reply_text("🎙️ Transcribing audio note with Whisper...")
 
     try:
         f = await voice_obj.get_file()
         audio_bytes = await f.download_as_bytearray()
-        transcribed_text = await transcribe_voice(audio_bytes, filename=f"voice_{chat_id}.ogg")
+        transcribed_text = await transcribe_voice(audio_bytes, filename=f"voice_{chat_id}.{ext}", mime_type=mime)
         if not transcribed_text:
             await status_msg.edit_text("⚠️ Could not detect speech in the audio note.")
             return
 
         print(f"[Telegram Bot] Transcribed voice: {transcribed_text!r}", flush=True)
-        try:
-            await status_msg.edit_text(f"🗣️ *Transcribed:* \"_{transcribed_text}_\"\n\n🤔 Routing request...", parse_mode="Markdown")
-        except Exception:
-            pass
+        await safe_edit_text(status_msg, f"🗣️ *Transcribed:* \"_{transcribed_text}_\"\n\n🤔 Routing request...", parse_mode="Markdown")
 
-        # Update message text to run through standard agent loop
         update.message.text = transcribed_text
         await handle_message(update, context)
     except Exception as e:
         print(f"[Telegram Bot] Voice note error: {e}", flush=True)
         try:
-            await status_msg.edit_text(f"⚠️ Voice note transcription failed: {e}")
+            await status_msg.edit_text(f"⚠️ Voice transcription failed: {e}")
         except Exception:
-            await update.message.reply_text(f"⚠️ Voice note transcription failed: {e}")
+            await update.message.reply_text(f"⚠️ Voice transcription failed: {e}")
 
 def main():
-    # Single-instance lock to prevent duplicate polling conflicts
+    global _LOCK_FILE
     lock_file_path = "/tmp/muse_telegram_bot.lock"
     try:
-        lock_file = open(lock_file_path, "w")
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _LOCK_FILE = open(lock_file_path, "w")
+        fcntl.flock(_LOCK_FILE, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (IOError, BlockingIOError):
         print("[Telegram Bot] ⚠️ Another instance of bot.py is already running. Exiting cleanly to avoid conflict.", flush=True)
         return
@@ -505,7 +572,6 @@ def main():
         print("[Telegram Bot] TELEGRAM_BOT_TOKEN not configured in .env. Exiting.", flush=True)
         return
 
-    # Python 3.14 requirement: ensure an event loop is set for the main thread
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -526,6 +592,7 @@ def main():
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_chat))
+    app.add_handler(CommandHandler("login", login_command))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(IMAGE_FILTER, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

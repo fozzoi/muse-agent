@@ -14,28 +14,35 @@ from core.database import load_local_manifest, save_local_manifest, sync_tools_f
 from core.sandbox import run_tool, create_and_run_tool
 from core.memory import add_message, format_history_context, clear_session, load_session, get_history, save_upload_image, copy_file_to_uploads, extract_image_path, UPLOADS_DIR
 
-ROUTER_SYSTEM_PROMPT = """You are the Lead Orchestrator for Muse, an autonomous AI agent running locally on Ubuntu Linux with direct system access via tools/.
-You can execute tools in sequence to accomplish complex tasks, combine outputs, and answer user requests.
+ROUTER_SYSTEM_PROMPT = """You are the Lead Orchestrator for Muse on Ubuntu Linux with direct system access via tools/.
+Analyze the user request, recent conversation history, and available tools.
 
-Analyze:
-1. The user's request.
-2. Available tools in the local tool registry.
-3. Steps already completed in this turn (if any).
+ROUTING RULES FOR BROWSER & DESKTOP:
+1. DESKTOP / VISIBLE MEDIA CONTROL:
+   - If the user asks to play a song/video, click something visible, navigate their open Chrome/YouTube window, or interact with an active desktop application:
+   - NEVER use `browser_agent`.
+   - First use `take_screenshot` if you need to inspect the screen.
+   - Use `desktop_navigator` with action='find_and_click' (passing target_text) or action='type'/'key' to interact with the real window.
 
-Return ONLY a valid JSON object matching ONE of these 4 actions:
+2. SILENT BACKGROUND SCRAPING:
+   - Use `browser_agent` ONLY when the user explicitly requests silent web data extraction, scraping, or reading web pages in the background where the user DOES NOT need to see the screen or hear playback.
+   - DO NOT use `browser_agent` when interacting with the user's open desktop windows.
+
+Return ONLY a valid JSON object matching ONE of these actions:
 
 1. EXECUTE A TOOL (Next step in your plan):
 {"action": "USE_TOOL", "tool_name": "exact_name_from_available_tools", "args": {"key": "value"}}
 Common tools:
+- desktop_navigator: Control user's REAL visible desktop screen, mouse, and keyboard. Use when interacting with desktop windows, Chrome, YouTube, or clicking visible elements. Actions: 'find_and_click' (args: {'target_text': 'song or button'}), 'click' (args: {'x': 100, 'y': 200}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return'}).
+- browser_agent: SILENT HEADLESS background browser. Use ONLY for silent background scraping or data extraction where user does not need to see screen or hear playback. NEVER use for desktop media/visible windows: {"action": "navigate|scrape|click|type", "url": "..."}
+- take_screenshot: Captures active Linux desktop display to inspect what windows, videos, or apps are currently visible: {}
 - sys_exec: Safely run any bash shell command (e.g. ps, uptime, curl, cli queries): {"command": "..."}
-- browser_agent: Automated browser navigation, scraping, clicking, typing, and authenticated web tasks: {"action": "navigate|scrape|screenshot|click|type", "url": "..."}
 - web_search: Searches the web for live information, news, links: {"query": "..."}
 - media_control: Controls audio volume, mute, WirePlumber sinks, and Bluetooth: {"action": "status|volume_up|volume_down|mute"}
 - git_manager: Inspects git repositories (status, log, diff, branch): {"action": "status|log|branch", "path": "..."}
 - system_monitor: Proactive health monitor (CPU, RAM %, Disks, Top processes, Battery): {}
 - fs_list: Lists files & directories in a path: {"path": "..."}
 - fs_read: Reads file text content: {"path": "..."}
-- take_screenshot: Captures desktop screenshot: {}
 - run_tesseract_ocr: Extracts text from images/screenshots: {"path": "..."}
 
 2. COMPLETE (All necessary info collected, ready to answer):
@@ -44,11 +51,11 @@ Use this when previous tool steps have gathered everything needed to answer the 
 
 3. CREATE NEW TOOL (Strict Last Resort):
 {"action": "MAKE_TOOL", "tool_name": "short_snake_case_name", "description": "Specification of what the script must do", "args": {}}
-CRITICAL: NEVER create a new tool for tasks that can be solved by running a terminal command with 'sys_exec', or by chaining existing tools! Only use MAKE_TOOL for complex new Python algorithmic libraries that do not exist.
+CRITICAL: NEVER create a new tool for tasks that can be solved by running 'desktop_navigator', 'sys_exec', or existing tools!
 
 4. TASK CONTINUATIONS & CONFIRMATIONS:
-If the conversation history shows an active automated task (such as inspecting a webpage, scraping a profile, or the assistant previously asked the user to take an action and the user replies with 'closed', 'yup logined', 'done', 'try now', 'go on', 'check what I asked'):
-CRITICAL: NEVER return 'DIRECT'! You MUST emit 'USE_TOOL' (e.g. 'browser_agent', 'git_manager', 'sys_exec') to actually execute the task! Returning 'DIRECT' on follow-up confirmations leaves the user waiting with zero actions taken.
+If the conversation history shows an active automated task (such as inspecting a webpage, playing music, or follow-up confirmations like 'done', 'try now', 'go on', 'check'):
+CRITICAL: NEVER return 'DIRECT'! You MUST emit 'USE_TOOL' (e.g. 'desktop_navigator', 'take_screenshot', 'browser_agent', 'sys_exec') to execute!
 
 5. DIRECT CONVERSATION (Only when truly purely conversational):
 {"action": "DIRECT"}

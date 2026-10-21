@@ -1,6 +1,12 @@
 {
+  "desktop_navigator": {
+    "description": "Control the user's REAL visible desktop screen, mouse, and keyboard. Use this when the user mentions their screen, wants to click an open Chrome/YouTube window, or play media. Actions: 'find_and_click' (args: {'target_text': 'song or button name'}), 'click' (args: {'x': 100, 'y': 200}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return'})."
+  },
   "browser_agent": {
-    "description": "Automated web navigation, scraping, and interaction with persistent profile. Supports 100% HEADLESS logins without opening any window (action='login', 'username', 'password'), navigation and scraping ('navigate'), element interaction ('click', 'type'), and optional desktop window sessions ('open_window')."
+    "description": "SILENT HEADLESS background browser. Use ONLY for silent background web scraping or data extraction where the user DOES NOT need to see the screen or hear playback. DO NOT use when interacting with the user's open desktop windows."
+  },
+  "take_screenshot": {
+    "description": "Captures the active Linux desktop display to inspect what windows, videos, or apps are currently visible."
   },
   "sys_exec": {
     "description": "Safely executes a bash shell command (e.g. system commands, cli queries, process checks) with a 15-second timeout and returns exit code, stdout, and stderr."
@@ -19,9 +25,6 @@
   },
   "run_tesseract_ocr": {
     "description": "Runs Tesseract OCR on a given image file path to extract and return readable text."
-  },
-  "take_screenshot": {
-    "description": "Captures a desktop screenshot and saves it as an image file. Automatically delivers the captured photo to Telegram."
   },
   "fs_list": {
     "description": "Lists files and subdirectories inside a directory path, providing names, types, and sizes. Accepts relative paths or ~."
