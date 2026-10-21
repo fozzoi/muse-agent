@@ -85,7 +85,7 @@ TELEGRAM_SYNTHESIS_SYSTEM_PROMPT = """You are Muse, an autonomous self-extending
 
 TELEGRAM MOBILE FORMATTING RULES:
 1. MOBILE-FIRST FORMATTING: Format your response specifically for a mobile chat app. Keep it structured, punchy, and quick to read.
-2. NO FALSE PROMISES: This response is the ONLY message the user will receive for this turn. NEVER say "Give me a moment", "Hold on while I pull the data", "I'll get back to you", or "I'm checking it now". Always deliver the actual concrete answer or exact findings right now.
+2. NO FALSE PROMISES: This response is the ONLY message the user will receive for this turn. NEVER say "Give me a moment", "Hold on while I pull the data", "I'll get back to you", or "I'm checking it now". NEVER end your response promising future updates, live checks, or saying you will fetch data later. All tool executions for this turn have already completed. Deliver the concrete facts, numbers, or current findings right now.
 3. NO MARKDOWN TABLES: NEVER generate Markdown tables (| col | col |). Telegram mobile clients cannot render tables and they look broken and unreadable. Instead, use clean emoji-bulleted lists:
    - 📁 **folder_name/**
    - 📄 **file_name** (size)
@@ -97,17 +97,106 @@ TELEGRAM MOBILE FORMATTING RULES:
 8. NO HALLUCINATIONS: NEVER claim a song or video is playing on the user's screen unless desktop_navigator actually clicked it. Report real tool actions honestly."""
 
 def _parse_json(text: str) -> dict:
-    text = re.sub(r"```(?:json)?\s*(.*?)```", r"\1", text, flags=re.DOTALL).strip()
+    if not text:
+        return {"action": "DIRECT"}
+
+    cleaned = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", text, flags=re.DOTALL).strip()
     decoder = json.JSONDecoder()
-    for i, ch in enumerate(text):
+    parsed_obj = None
+
+    for i, ch in enumerate(cleaned):
         if ch == "{":
             try:
-                obj, _ = decoder.raw_decode(text[i:])
-                if isinstance(obj, dict) and "action" in obj:
-                    return obj
+                obj, _ = decoder.raw_decode(cleaned[i:])
+                if isinstance(obj, dict):
+                    parsed_obj = obj
+                    break
             except Exception:
                 continue
-    return {"action": "DIRECT"}
+
+    if not parsed_obj:
+        return {"action": "DIRECT"}
+
+    # Handle standard nested function calling: {"function": {"name": ..., "arguments": ...}}
+    if "function" in parsed_obj and isinstance(parsed_obj["function"], dict):
+        fn = parsed_obj["function"]
+        return {
+            "action": "USE_TOOL",
+            "tool_name": fn.get("name"),
+            "args": fn.get("arguments", fn.get("parameters", {})),
+        }
+
+    # Handle tool/name call without action: {"name": "web_search", "parameters": ...}
+    if ("name" in parsed_obj or "tool" in parsed_obj) and "action" not in parsed_obj:
+        t_name = parsed_obj.get("name") or parsed_obj.get("tool")
+        args = parsed_obj.get("parameters") or parsed_obj.get("arguments") or parsed_obj.get("args") or {}
+        if not args:
+            args = {k: v for k, v in parsed_obj.items() if k not in ("name", "tool", "tool_name")}
+        return {
+            "action": "USE_TOOL",
+            "tool_name": t_name,
+            "args": args if isinstance(args, dict) else {},
+        }
+
+    action = parsed_obj.get("action")
+    if not action:
+        if "tool_name" in parsed_obj or "tool" in parsed_obj:
+            t_name = parsed_obj.get("tool_name") or parsed_obj.get("tool")
+            args = parsed_obj.get("args", {})
+            if not args:
+                args = {k: v for k, v in parsed_obj.items() if k not in ("tool", "tool_name")}
+            return {
+                "action": "USE_TOOL",
+                "tool_name": t_name,
+                "args": args if isinstance(args, dict) else {},
+            }
+        return {"action": "DIRECT"}
+
+    action_upper = str(action).strip().upper()
+    if action_upper in ("FINISH", "COMPLETE", "DONE"):
+        return {"action": "FINISH"}
+    if action_upper in ("DIRECT", "CHAT", "CONVERSE"):
+        return {"action": "DIRECT"}
+    if action_upper in ("MAKE_TOOL", "CREATE_TOOL", "BUILD_TOOL"):
+        return {
+            "action": "MAKE_TOOL",
+            "tool_name": parsed_obj.get("tool_name", "custom_tool"),
+            "description": parsed_obj.get("description", ""),
+            "args": parsed_obj.get("args", {}),
+        }
+    if action_upper in ("USE_TOOL", "RUN_TOOL", "EXECUTE_TOOL", "TOOL"):
+        t_name = parsed_obj.get("tool_name") or parsed_obj.get("tool") or parsed_obj.get("name")
+        args = parsed_obj.get("args", {})
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                args = {"raw": args}
+        if not isinstance(args, dict):
+            args = {}
+        if not args:
+            args = {k: v for k, v in parsed_obj.items() if k not in ("action", "tool_name", "tool", "name")}
+        return {
+            "action": "USE_TOOL",
+            "tool_name": t_name,
+            "args": args,
+        }
+
+    # Model emitted action as the tool name itself (e.g. {"action": "sys_exec", "command": "date"})
+    t_name = action
+    args = parsed_obj.get("args", {})
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {"raw": args}
+    if not isinstance(args, dict) or not args:
+        args = {k: v for k, v in parsed_obj.items() if k != "action"}
+    return {
+        "action": "USE_TOOL",
+        "tool_name": t_name,
+        "args": args,
+    }
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -247,7 +336,7 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
 
                 if action == "DIRECT":
                     if not tool_trace:
-                        direct_sys = f"{SYNTHESIS_SYSTEM_PROMPT}\n\nYour active local tools in tools/manifest.json:\n{json.dumps(manifest, indent=2)}"
+                        direct_sys = f"{SYNTHESIS_SYSTEM_PROMPT}\n\n{user_profile_context}\n\nYour active local tools in tools/manifest.json:\n{json.dumps(manifest, indent=2)}"
                         ans = await generate("chat", prompt, system=direct_sys, history=get_history(session, limit=10))
                         add_message(session, "user", prompt)
                         add_message(session, "assistant", ans["text"])
@@ -259,6 +348,8 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                 if action == "USE_TOOL":
                     t_name = decision.get("tool_name", "")
                     tool_args = decision.get("args", {})
+                    if not t_name:
+                        break
                     yield {
                         "event": "status",
                         "data": json.dumps({
@@ -304,7 +395,7 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
             steps_context = "\n\n---\n\n".join(combined_raw)
             final = await generate(
                 "chat",
-                f"User asked: {prompt}\n\nExecuted tool results across steps:\n{steps_context}\n\nSynthesize a clear, structured, and complete final answer for the user.",
+                f"{user_profile_context}\n\nUser asked: {prompt}\n\nExecuted tool results across steps:\n{steps_context if steps_context else '(No tools were executed)'}\n\nSynthesize a clear, structured, and complete final answer for the user.",
                 system=SYNTHESIS_SYSTEM_PROMPT,
                 history=get_history(session, limit=10),
             )

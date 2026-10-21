@@ -15,7 +15,7 @@ from core.quota_manager import (
 ROLE_ROUTES = {
     "router": [
         ("gemini", "gemini-3.5-flash-lite"),
-        ("groq", "openai/gpt-oss-20b"),
+        ("groq", "qwen/qwen3.8-27b"),
         ("gemini", "gemini-3.1-flash-lite"),
         ("gemini", "gemini-3.5-flash"),
         ("mistral", "codestral-latest"),
@@ -27,6 +27,7 @@ ROLE_ROUTES = {
         ("mistral", "codestral-latest"),       # Dedicated code synthesis engine
         ("gemini", "gemini-2.5-flash"),        # Stable fallback
         ("gemini", "gemini-3.5-flash-lite"),   # Fast lightweight
+        ("groq", "qwen/qwen3.8-27b"),          # Fast reasoning model
         ("groq", "openai/gpt-oss-120b"),       # Fast 120B open-weights model
     ],
     "heavy": [

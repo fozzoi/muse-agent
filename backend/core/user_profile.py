@@ -76,8 +76,12 @@ def get_user_profile_context() -> str:
     Formats the evolved user profile into a compact, high-impact block
     to inject directly into the router and agent planning prompts.
     """
+    from datetime import datetime
+    now_str = datetime.now().strftime("%A, %B %d, %Y - %I:%M %p %Z")
+
     profile = load_profile()
     lines = [
+        f"CURRENT REAL-TIME SYSTEM CLOCK: {now_str}",
         "EVOLVED USER PROFILE & PREFERENCES (Learned from past interactions):",
         f"• User Location: {profile.get('location', 'Nilambur, Kerala')}",
         f"• Desktop Environment: {profile.get('hardware', {}).get('os', 'Ubuntu Linux')} - {profile.get('hardware', {}).get('desktop_environment', 'GNOME Wayland')}",

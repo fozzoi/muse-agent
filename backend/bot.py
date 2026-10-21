@@ -402,7 +402,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if action == "DIRECT":
                 if not tool_trace:
-                    direct_sys = f"{TELEGRAM_SYNTHESIS_SYSTEM_PROMPT}\n\nYour active local tools in tools/manifest.json:\n{json.dumps(manifest, indent=2)}"
+                    direct_sys = f"{TELEGRAM_SYNTHESIS_SYSTEM_PROMPT}\n\n{user_profile_context}\n\nYour active local tools in tools/manifest.json:\n{json.dumps(manifest, indent=2)}"
                     ans = await generate("chat", user_prompt, system=direct_sys, history=get_history(session_id, limit=10))
                     add_message(session_id, "user", user_prompt)
                     add_message(session_id, "assistant", ans["text"])
@@ -414,6 +414,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if action == "USE_TOOL":
                 t_name = decision.get("tool_name", "")
                 tool_args = decision.get("args", {})
+                if not t_name:
+                    print(f"[Telegram Bot] Step {step_count}: USE_TOOL with missing tool_name! Breaking.", flush=True)
+                    break
                 await safe_edit_text(status_msg, f"⚙️ Step {step_count}: Running `{t_name}`...", parse_mode="Markdown")
 
                 print(f"[Telegram Bot] Step {step_count}: Running '{t_name}' with {tool_args}", flush=True)
@@ -470,9 +473,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit_text(status_msg, "✨ Formatting final response...")
 
         steps_context = "\n\n---\n\n".join(combined_raw)
+        synthesis_prompt = (
+            f"{user_profile_context}\n\n"
+            f"User asked: {user_prompt}\n\n"
+            f"Executed tool results across steps:\n{steps_context if steps_context else '(No tools were executed)'}\n\n"
+            f"Provide the final structured answer for the user on Telegram."
+        )
         final = await generate(
             "chat",
-            f"User asked: {user_prompt}\n\nExecuted tool results across steps:\n{steps_context}\n\nProvide the final structured answer for the user on Telegram.",
+            synthesis_prompt,
             system=TELEGRAM_SYNTHESIS_SYSTEM_PROMPT,
             history=get_history(session_id, limit=10),
         )
