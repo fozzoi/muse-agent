@@ -370,8 +370,10 @@ async def deliver_response(update: Update, status_msg, reply_text: str, image_fi
         except Exception:
             await status_msg.edit_text(reply_text)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, custom_prompt: str | None = None):
+    if not update.message:
+        return
+    if not custom_prompt and not update.message.text:
         return
 
     if not await is_authorized(update):
@@ -379,8 +381,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = str(update.effective_chat.id)
     session_id = f"tg_{chat_id}"
-    user_prompt = update.message.text
-    print(f"[Telegram Bot] Received text from {chat_id}: {user_prompt[:80]}", flush=True)
+    user_prompt = (custom_prompt or update.message.text or "").strip()
+    print(f"[Telegram Bot] Received request from {chat_id}: {user_prompt[:80]}", flush=True)
     status_msg = await update.message.reply_text("🤔 Routing request...")
 
     try:
@@ -666,8 +668,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"[Telegram Bot] Transcribed voice: {transcribed_text!r}", flush=True)
         await safe_edit_text(status_msg, f"🗣️ *Transcribed:* \"_{transcribed_text}_\"\n\n🤔 Routing request...", parse_mode="Markdown")
 
-        update.message.text = transcribed_text
-        await handle_message(update, context)
+        await handle_message(update, context, custom_prompt=transcribed_text)
     except Exception as e:
         print(f"[Telegram Bot] Voice note error: {e}", flush=True)
         try:
