@@ -173,6 +173,30 @@ def run_action(action: str, x: int = 0, y: int = 0, text: str = "") -> dict:
             "message": f"Pressed key '{text}'" if ok else "Failed to press key",
         }
 
+    elif action in ("minimize", "window_minimize", "hide"):
+        # Use GNOME Wayland shortcut (Alt+F9 or Super+h) or wmctrl (NEVER use pkill!)
+        if text:
+            try:
+                subprocess.run(["wmctrl", "-r", text, "-b", "add,hidden"], env=get_env(), capture_output=True, timeout=3)
+            except Exception:
+                pass
+        xdotool_cmd = ["xdotool", "key", "--clearmodifiers", "Alt+F9"]
+        ok = _exec_input([], xdotool_cmd)
+        return {
+            "status": "success" if ok else "error",
+            "action": "minimize",
+            "message": "Minimized active window using Alt+F9 shortcut" if ok else "Failed to minimize",
+        }
+
+    elif action in ("close_window", "close_app"):
+        xdotool_cmd = ["xdotool", "key", "--clearmodifiers", "Alt+F4"]
+        ok = _exec_input([], xdotool_cmd)
+        return {
+            "status": "success" if ok else "error",
+            "action": "close_window",
+            "message": "Closed active window using Alt+F4 shortcut" if ok else "Failed to close window",
+        }
+
     return {"status": "error", "message": f"Unknown action '{action}'"}
 
 def find_and_click_text(target_text: str) -> dict:

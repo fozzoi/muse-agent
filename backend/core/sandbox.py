@@ -60,7 +60,11 @@ Or invoke the existing local tool 'take_screenshot.py'.
 The GNOME notification server does not implement GetNotifications. Do not call org.freedesktop.Notifications.GetNotifications.
 To check notifications, inspect system logs via 'journalctl -b --user -u org.gnome.Shell' or read app-specific state.
 
-7. LINUX SYSTEM TASKS:
+7. LINUX SYSTEM TASKS & WINDOW MANAGEMENT:
+- Window Management: NEVER call 'pkill' or 'kill -9' when asked to minimize or close a window! Killing processes destroys the user's active session and browser tabs.
+  Use keyboard shortcuts or window manager commands:
+  - Minimize: subprocess.run(["xdotool", "key", "--clearmodifiers", "Alt+F9"]) or invoke 'desktop_navigator' with action='minimize'
+  - Close gracefully: subprocess.run(["xdotool", "key", "--clearmodifiers", "Alt+F4"]) or wmctrl -c <title>
 - Audio/Media: Use wpctl or pactl via subprocess.check_output. Ensure env sets XDG_RUNTIME_DIR=/run/user/<uid> and DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus.
 - Hardware/System: Read /proc, /sys, shutil, psutil, or standard CLI utilities (df, free, ip, lsblk, upower).
 
