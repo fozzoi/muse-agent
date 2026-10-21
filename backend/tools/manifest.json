@@ -1,6 +1,6 @@
 {
   "desktop_navigator": {
-    "description": "Control the user's REAL visible desktop screen, mouse, and keyboard. Actions: 'focus' (args: {'text': 'chrome' or 'zen'}), 'click' (args: {'x': 100, 'y': 200}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return' or 'space'}), 'find_and_click' (args: {'target_text': 'song or button'}), 'minimize' (args: {})."
+    "description": "Control the user's REAL visible desktop screen (1920x1080), mouse, and keyboard. Actions: 'focus' (args: {'text': 'chrome' or 'zen'}), 'click' (args: {'x': 600, 'y': 320} - safe canvas Y: 80-960; NEVER click Y > 980 or Y < 40 to avoid system dock/panel misclicks), 'find_and_click' (args: {'target_text': 'song or button'}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return' or 'space'}), 'minimize' (args: {})."
   },
   "browser_agent": {
     "description": "SILENT HEADLESS background browser. Use ONLY for silent background web scraping or data extraction where the user DOES NOT need to see the screen or hear playback. DO NOT use when interacting with the user's open desktop windows."

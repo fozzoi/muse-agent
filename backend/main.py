@@ -23,7 +23,9 @@ Analyze the user request, recent conversation history, and available tools.
 
 ROUTING RULES FOR BROWSER & DESKTOP:
 1. DESKTOP / VISIBLE MEDIA CONTROL (EFFICIENT 3-STEP FLOW):
-   - Step 1 (Inspect Screen): Call `take_screenshot` ONCE. The AI Vision model will automatically analyze the active screen and return the active window, visible UI elements, and key coordinates.
+   - SCREEN RESOLUTION: Exactly 1920x1080 pixels (X: 0 to 1920, Y: 0 to 1080).
+   - DOCK & TOP PANEL BOUNDARIES: The Ubuntu GNOME top bar is at Y < 40 and the application dock is at the bottom (Y > 980). NEVER click Y > 980 or Y < 40 for web/application interactions! Misclicks on Y > 980 trigger bottom dock icons (e.g. Nautilus/Files). Web and YouTube content resides strictly in Y: 80 to 950.
+   - Step 1 (Inspect Screen): Call `take_screenshot` ONCE. The AI Vision model will automatically analyze the active screen at 1920x1080 and return the active window, visible UI elements, and key pixel coordinates.
    - NEVER call `run_tesseract_ocr`. `take_screenshot` ALREADY runs AI vision directly on the image!
    - Step 2 (Focus & Execute): Read `ai_vision_analysis`.
      * If the target app (e.g. Chrome, YouTube, Zen) is NOT visible or in the background: You MUST first focus or launch it: `desktop_navigator` (action='focus', text='google-chrome' or 'zen') or `sys_exec: google-chrome "https://www.youtube.com"`.
@@ -41,7 +43,10 @@ Return ONLY a valid JSON object matching ONE of these actions:
 1. EXECUTE A TOOL (Next step in your plan):
 {"action": "USE_TOOL", "tool_name": "exact_name_from_available_tools", "args": {"key": "value"}}
 Common tools:
-- desktop_navigator: Control user's REAL visible desktop screen, mouse, and keyboard. Actions: 'focus' (args: {'text': 'chrome' or 'zen'}), 'click' (args: {'x': 100, 'y': 200}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return' or 'space'}), 'find_and_click' (args: {'target_text': 'exact title or button'}), 'minimize' (args: {}).
+- desktop_navigator: Control user's REAL visible desktop screen (1920x1080), mouse, and keyboard.
+  * Screen Resolution: Exactly 1920x1080 pixels.
+  * Safety: Bottom dock is at Y > 980, top panel at Y < 40. Keep web/media clicks within Y: 80 to 960.
+  * Actions: 'focus' (args: {'text': 'chrome' or 'zen'}), 'click' (args: {'x': 600, 'y': 320}), 'find_and_click' (args: {'target_text': 'exact title or button'}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return' or 'space'}), 'minimize' (args: {}).
 - browser_agent: SILENT HEADLESS background browser. Use ONLY for silent background scraping or data extraction where user does not need to see screen or hear playback. NEVER use for desktop media/visible windows: {"action": "navigate|scrape|click|type", "url": "..."}
 - take_screenshot: Captures active Linux desktop display and automatically runs AI vision analysis to report visible windows, UI elements, and coordinates. Call at most ONCE to inspect the screen before taking action, and ONCE at the end to confirm: {}
 - sys_exec: Safely run any bash shell command (e.g. ps, uptime, curl, cli queries): {"command": "..."}
@@ -384,12 +389,20 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                         if img_path and os.path.isfile(img_path):
                             vis_prompt = (
                                 f"You are the visual cortex for Muse Agent on Ubuntu Linux desktop.\n"
-                                f"The user's current request is: '{prompt}'\n"
+                                f"The user's current request is: '{prompt}'\n\n"
+                                f"SCREEN METRICS & SPATIAL GROUNDING:\n"
+                                f"- Total Display Resolution: EXACTLY 1920x1080 pixels (Width: 1920, Height: 1080).\n"
+                                f"- Coordinate System: Absolute pixel coordinates from (0, 0) top-left to (1920, 1080) bottom-right.\n"
+                                f"- DO NOT use normalized 0-1000 or 0.0-1.0 coordinates! Output exact integer pixel coordinates (X: 0 to 1920, Y: 0 to 1080).\n"
+                                f"- CRITICAL BOUNDARY & PANEL CONSTRAINTS:\n"
+                                f"  * Top Panel: Y < 40 is the Ubuntu system top bar (clock, indicators). NEVER output coordinates with Y < 40 for application interactions.\n"
+                                f"  * Bottom Dock: Y > 980 contains the Ubuntu system application dock (Files/Nautilus, Terminal, Settings). NEVER output Y > 980 unless explicitly asked to interact with the system dock.\n"
+                                f"  * Safe Application Canvas: Web pages, YouTube video cards, search bars, and application windows reside strictly between X: 50 to 1870 and Y: 80 to 950.\n\n"
                                 f"Analyze this active desktop screenshot carefully:\n"
-                                f"1. What application/window is currently focused and active?\n"
+                                f"1. What application/window is currently focused and active in the foreground?\n"
                                 f"2. Is the requested application (e.g. Google Chrome, YouTube, Zen Browser) visible on screen? Where is it located?\n"
-                                f"3. What are the key UI elements visible (e.g. search bars, video cards, play buttons, tabs) and their approximate screen coordinates (X, Y)?\n"
-                                f"4. What specific action should the agent take next (e.g. 'Launch or focus Google Chrome first because only VS Code is visible', or 'Click YouTube search bar at (600, 140)')?\n"
+                                f"3. What are the key UI elements visible (e.g. search bars, video thumbnails/cards, play buttons, tabs) and their exact pixel coordinates (X, Y) within the 1920x1080 resolution?\n"
+                                f"4. What specific action should the agent take next (e.g. 'Launch or focus Google Chrome first via desktop_navigator focus because only VS Code is visible', or 'Click YouTube video title at pixel (X: 620, Y: 340)')?\n"
                                 f"Be concise, technical, and actionable."
                             )
                             try:

@@ -464,12 +464,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, cus
                         await safe_edit_text(status_msg, f"👁️ Step {step_count}: Analyzing screen visually with AI...", parse_mode="Markdown")
                         vis_prompt = (
                             f"You are the visual cortex for Muse Agent on Ubuntu Linux desktop.\n"
-                            f"The user's current request is: '{user_prompt}'\n"
+                            f"The user's current request is: '{user_prompt}'\n\n"
+                            f"SCREEN METRICS & SPATIAL GROUNDING:\n"
+                            f"- Total Display Resolution: EXACTLY 1920x1080 pixels (Width: 1920, Height: 1080).\n"
+                            f"- Coordinate System: Absolute pixel coordinates from (0, 0) top-left to (1920, 1080) bottom-right.\n"
+                            f"- DO NOT use normalized 0-1000 or 0.0-1.0 coordinates! Output exact integer pixel coordinates (X: 0 to 1920, Y: 0 to 1080).\n"
+                            f"- CRITICAL BOUNDARY & PANEL CONSTRAINTS:\n"
+                            f"  * Top Panel: Y < 40 is the Ubuntu system top bar (clock, indicators). NEVER output coordinates with Y < 40 for application interactions.\n"
+                            f"  * Bottom Dock: Y > 980 contains the Ubuntu system application dock (Files/Nautilus, Terminal, Settings). NEVER output Y > 980 unless explicitly asked to interact with the system dock.\n"
+                            f"  * Safe Application Canvas: Web pages, YouTube video cards, search bars, and application windows reside strictly between X: 50 to 1870 and Y: 80 to 950.\n\n"
                             f"Analyze this active desktop screenshot carefully:\n"
-                            f"1. What application/window is currently focused and active?\n"
+                            f"1. What application/window is currently focused and active in the foreground?\n"
                             f"2. Is the requested application (e.g. Google Chrome, YouTube, Zen Browser) visible on screen? Where is it located?\n"
-                            f"3. What are the key UI elements visible (e.g. search bars, video cards, play buttons, tabs) and their approximate screen coordinates (X, Y)?\n"
-                            f"4. What specific action should the agent take next (e.g. 'Launch or focus Google Chrome first because only VS Code is visible', or 'Click YouTube search bar at (600, 140)')?\n"
+                            f"3. What are the key UI elements visible (e.g. search bars, video thumbnails/cards, play buttons, tabs) and their exact pixel coordinates (X, Y) within the 1920x1080 resolution?\n"
+                            f"4. What specific action should the agent take next (e.g. 'Launch or focus Google Chrome first via desktop_navigator focus because only VS Code is visible', or 'Click YouTube video title at pixel (X: 620, Y: 340)')?\n"
                             f"Be concise, technical, and actionable."
                         )
                         try:

@@ -112,28 +112,91 @@ def _exec_input(ydotool_cmds: list[list[str]], xdotool_cmd: list[str]) -> bool:
 
     return False
 
-def run_action(action: str, x: int = 0, y: int = 0, text: str = "") -> dict:
+DEFAULT_WIDTH = 1920
+DEFAULT_HEIGHT = 1080
+
+def get_screen_dimensions() -> tuple[int, int]:
+    """Retrieves current display resolution from recent screenshot or default 1920x1080."""
+    try:
+        from PIL import Image
+        shot_path = capture_screen()
+        if shot_path and os.path.exists(shot_path):
+            with Image.open(shot_path) as img:
+                return img.size
+    except Exception:
+        pass
+    return (DEFAULT_WIDTH, DEFAULT_HEIGHT)
+
+def map_and_clamp_coordinates(x_val, y_val, allow_dock: bool = False) -> tuple[int, int, str]:
+    """Maps normalized [0, 1] or out-of-bounds coordinates to physical pixels,
+    and safeguards against misclicking the Ubuntu dock (Y > 980) or top bar (Y < 40)."""
+    screen_w, screen_h = get_screen_dimensions()
+    notes = []
+
+    try:
+        x_num = float(x_val) if x_val is not None else 0.0
+    except (ValueError, TypeError):
+        x_num = 0.0
+
+    try:
+        y_num = float(y_val) if y_val is not None else 0.0
+    except (ValueError, TypeError):
+        y_num = 0.0
+
+    # Auto-scale normalized [0.0, 1.0] coordinates
+    if 0.0 < x_num <= 1.0:
+        x_num = x_num * screen_w
+        notes.append(f"Auto-scaled X from normalized [0, 1] to {int(x_num)}")
+    if 0.0 < y_num <= 1.0:
+        y_num = y_num * screen_h
+        notes.append(f"Auto-scaled Y from normalized [0, 1] to {int(y_num)}")
+
+    x = int(round(x_num))
+    y = int(round(y_num))
+
+    # Clamp X to screen width
+    x = max(0, min(screen_w - 1, x))
+
+    # Dock and top-panel safeguards (Dock on Ubuntu GNOME is at bottom Y > 980, top panel at Y < 40)
+    if not allow_dock:
+        if y < 40:
+            notes.append(f"Clamped Y from {y} to 45 (avoiding top system bar)")
+            y = 45
+        elif y >= (screen_h - 100):  # >= 980 on 1080p
+            safe_bottom = screen_h - 120  # 960 on 1080p
+            notes.append(f"Clamped Y from {y} to {safe_bottom} (avoiding Ubuntu Dock misclicks / Nautilus launch)")
+            y = safe_bottom
+    else:
+        y = max(0, min(screen_h - 1, y))
+
+    return x, y, "; ".join(notes)
+
+def run_action(action: str, x: int = 0, y: int = 0, text: str = "", allow_dock: bool = False) -> dict:
     """Executes a low-level desktop input action."""
     action = (action or "click").lower().strip()
-    x = int(x) if x is not None else 0
-    y = int(y) if y is not None else 0
     text = str(text or "").strip()
 
     if action in ("click", "left_click"):
+        x, y, note = map_and_clamp_coordinates(x, y, allow_dock=allow_dock)
         ydotool_cmds = [
             ["ydotool", "mousemove", "-a", "-x", str(x), "-y", str(y)],
             ["ydotool", "click", "0xC0"],
         ]
         xdotool_cmd = ["xdotool", "mousemove", str(x), str(y), "click", "1"]
         ok = _exec_input(ydotool_cmds, xdotool_cmd)
-        return {
+        res = {
             "status": "success" if ok else "error",
             "action": "click",
             "coordinates": {"x": x, "y": y},
+            "screen_mapped": f"{DEFAULT_WIDTH}x{DEFAULT_HEIGHT}",
             "message": f"Clicked at ({x}, {y})" if ok else "Failed to click",
         }
+        if note:
+            res["safeguard_note"] = note
+        return res
 
     elif action in ("double_click", "dblclick"):
+        x, y, note = map_and_clamp_coordinates(x, y, allow_dock=allow_dock)
         ydotool_cmds = [
             ["ydotool", "mousemove", "-a", "-x", str(x), "-y", str(y)],
             ["ydotool", "click", "0xC0"],
@@ -141,23 +204,32 @@ def run_action(action: str, x: int = 0, y: int = 0, text: str = "") -> dict:
         ]
         xdotool_cmd = ["xdotool", "mousemove", str(x), str(y), "click", "--repeat", "2", "--delay", "100", "1"]
         ok = _exec_input(ydotool_cmds, xdotool_cmd)
-        return {
+        res = {
             "status": "success" if ok else "error",
             "action": "double_click",
             "coordinates": {"x": x, "y": y},
+            "screen_mapped": f"{DEFAULT_WIDTH}x{DEFAULT_HEIGHT}",
             "message": f"Double clicked at ({x}, {y})" if ok else "Failed to double click",
         }
+        if note:
+            res["safeguard_note"] = note
+        return res
 
     elif action in ("mousemove", "move"):
+        x, y, note = map_and_clamp_coordinates(x, y, allow_dock=allow_dock)
         ydotool_cmds = [["ydotool", "mousemove", "-a", "-x", str(x), "-y", str(y)]]
         xdotool_cmd = ["xdotool", "mousemove", str(x), str(y)]
         ok = _exec_input(ydotool_cmds, xdotool_cmd)
-        return {
+        res = {
             "status": "success" if ok else "error",
             "action": "mousemove",
             "coordinates": {"x": x, "y": y},
+            "screen_mapped": f"{DEFAULT_WIDTH}x{DEFAULT_HEIGHT}",
             "message": f"Moved cursor to ({x}, {y})" if ok else "Failed to move cursor",
         }
+        if note:
+            res["safeguard_note"] = note
+        return res
 
     elif action in ("type", "write"):
         if not text:
@@ -193,7 +265,8 @@ def run_action(action: str, x: int = 0, y: int = 0, text: str = "") -> dict:
         target = text.lower() if text else "chrome"
         if "chrome" in target:
             try:
-                subprocess.Popen(["google-chrome", "https://www.youtube.com" if "youtube" in target else ""])
+                cmd = ["google-chrome", "https://www.youtube.com"] if "youtube" in target else ["google-chrome"]
+                subprocess.Popen(cmd)
                 time.sleep(1)
                 return {"status": "success", "action": "focus", "message": "Brought Google Chrome to foreground"}
             except Exception as e:
@@ -308,6 +381,7 @@ def main():
 
     action = str(args.get("action", "")).lower().strip()
     target_text = args.get("target_text") or args.get("text") or args.get("query") or args.get("title")
+    allow_dock = bool(args.get("allow_dock", False))
 
     # If action is find_and_click or target_text is explicitly provided
     if action == "find_and_click" or (target_text and action not in ("type", "key")):
@@ -316,7 +390,7 @@ def main():
         x = args.get("x")
         y = args.get("y")
         text_arg = args.get("text") or args.get("key") or ""
-        res = run_action(action, x=x, y=y, text=text_arg)
+        res = run_action(action, x=x, y=y, text=text_arg, allow_dock=allow_dock)
     else:
         # Default fallback: if target_text exists, find_and_click
         if target_text:

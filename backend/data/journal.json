@@ -101,5 +101,35 @@
       "user_evolved",
       "learned_feedback"
     ]
+  },
+  {
+    "id": "lesson-10",
+    "title": "Avoid Forceful Mass Termination of Applications",
+    "problem": "The agent used 'pkill -9 chrome' to close Chrome, which is disruptive and against user expectations when the task is simply to decide if a window is open or close specific instances.",
+    "solution": "Rely on visual verification via screenshots and targeted window management rather than aggressively killing background processes.",
+    "tags": [
+      "user_evolved",
+      "learned_feedback"
+    ]
+  },
+  {
+    "id": "lesson-11",
+    "title": "Failed Media Playback Verification",
+    "problem": "The agent claimed it played the media based on a click, but the user pointed out that the screenshot showed it wasn't playing and the click wasn't registered properly.",
+    "solution": "Thoroughly inspect screenshots for playback indicators (e.g., play/pause state, progress bar movement) before confirming that media is playing.",
+    "tags": [
+      "user_evolved",
+      "learned_feedback"
+    ]
+  },
+  {
+    "id": "lesson-12",
+    "title": "Incorrect Screen Mapping Leading to Misclicks",
+    "problem": "The agent attempted to interact with the desktop or open an app without properly mapping the screen size and coordinate space, resulting in misclicks into wrong applications like the Watcher app.",
+    "solution": "Always verify screen resolution, layout, and exact coordinate mapping before executing mouse clicks or window navigation actions.",
+    "tags": [
+      "user_evolved",
+      "learned_feedback"
+    ]
   }
 ]
