@@ -384,9 +384,12 @@ def main():
     allow_dock = bool(args.get("allow_dock", False))
 
     # If action is find_and_click or target_text is explicitly provided
-    if action == "find_and_click" or (target_text and action not in ("type", "key")):
+    if action == "screenshot":
+        path = capture_screen()
+        res = {"status": "success", "file_path": path}
+    elif action == "find_and_click" or (target_text and action not in ("type", "key")):
         res = find_and_click_text(target_text)
-    elif action in ("click", "double_click", "mousemove", "type", "key"):
+    elif action in ("click", "double_click", "mousemove", "type", "key", "focus", "minimize", "close_window"):
         x = args.get("x")
         y = args.get("y")
         text_arg = args.get("text") or args.get("key") or ""

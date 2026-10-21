@@ -1,296 +1,232 @@
 #!/usr/bin/env python3
-"""Autonomous Browser Agent for Muse Agent.
-Navigates the web, extracts page content, captures screenshots, clicks/types,
-and performs persistent headless sessions or interactive desktop GUI logins.
+"""Hermes-Style Persistent Browser Harness for Muse Agent.
+Connects to a persistent visible Chrome instance via CDP (port 9222),
+injects DOM element indices [1], [2], [3] for 100% accurate clicking/typing,
+and includes a dedicated YouTube auto-player.
 """
 import os
 import sys
 import json
 import time
+import urllib.parse
+import urllib.request
 import subprocess
-from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
+CDP_PORT = 9222
+CDP_URL = f"http://127.0.0.1:{CDP_PORT}"
 PROFILE_DIR = os.path.expanduser("~/.config/muse-agent/browser-profile")
 SCREENSHOTS_DIR = os.path.expanduser("~/Pictures/Screenshots")
 
+# JavaScript injected into any webpage to index all interactive elements like Hermes/browser-use
+DOM_INDEXER_JS = """
+() => {
+    // Remove old labels
+    document.querySelectorAll('.muse-dom-label').forEach(el => el.remove());
+    window.__muse_elements = {};
+    let idx = 1;
 
-def get_env():
-    env = os.environ.copy()
-    uid = os.getuid()
-    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
-    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
-    return env
+    const selectors = 'a, button, input, textarea, select, [role="button"], [role="link"], ytd-video-renderer a#video-title, h3';
+    const nodes = document.querySelectorAll(selectors);
+    const items = [];
 
+    nodes.forEach(el => {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        if (rect.width < 10 || rect.height < 10 || style.visibility === 'hidden' || style.display === 'none') return;
+        if (rect.top < 0 || rect.left < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) return;
 
-def clean_locks():
-    """Removes stale Singleton locks left by previous crashes so Playwright doesn't hang."""
-    for item in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
-        p = os.path.join(PROFILE_DIR, item)
+        const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('title') || el.value || '').trim().replace(/\\s+/g, ' ');
+        const tag = el.tagName.toLowerCase();
+        if (!text && tag !== 'input' && tag !== 'textarea') return;
+
+        const currentIdx = idx++;
+        el.setAttribute('data-muse-id', String(currentIdx));
+
+        // Draw subtle visual badge on screen for vision grounding
+        const badge = document.createElement('div');
+        badge.className = 'muse-dom-label';
+        badge.textContent = currentIdx;
+        badge.style.cssText = `position:fixed;top:${Math.max(0, rect.top)}px;left:${Math.max(0, rect.left)}px;background:#ef4444;color:#fff;font-size:11px;font-weight:bold;padding:1px 4px;border-radius:3px;z-index:2147483647;pointer-events:none;`;
+        document.body.appendChild(badge);
+
+        items.push({
+            id: currentIdx,
+            tag: tag,
+            type: el.getAttribute('type') || '',
+            text: text.slice(0, 90),
+            href: (el.getAttribute('href') || '').slice(0, 100)
+        });
+    });
+    return items.slice(0, 60);
+}
+"""
+
+def ensure_chrome_running():
+    """Ensures a visible Chrome window is running with CDP port 9222 open."""
+    try:
+        urllib.request.urlopen(f"{CDP_URL}/json/version", timeout=1.5)
+        return True
+    except Exception:
+        pass
+
+    os.makedirs(PROFILE_DIR, exist_ok=True)
+    for lock in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        p = os.path.join(PROFILE_DIR, lock)
         if os.path.islink(p) or os.path.exists(p):
             try:
                 os.unlink(p)
             except Exception:
                 pass
 
+    env = os.environ.copy()
+    uid = os.getuid()
+    env.setdefault("DISPLAY", ":0")
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+    env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path=/run/user/{uid}/bus")
 
-def parse_args():
-    raw = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else "{}"
-    if isinstance(raw, dict):
-        return raw
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {"url": str(raw)}
-    except Exception:
-        return {"url": str(raw)}
+    chrome_bins = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+    chrome_cmd = next((b for b in chrome_bins if subprocess.run(["which", b], capture_output=True).returncode == 0), "google-chrome")
 
+    subprocess.Popen(
+        [
+            chrome_cmd,
+            f"--remote-debugging-port={CDP_PORT}",
+            f"--user-data-dir={PROFILE_DIR}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-blink-features=AutomationControlled",
+            "--autoplay-policy=no-user-gesture-required",
+            "about:blank",
+        ],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
-def clean_html(html_content: str) -> str:
-    soup = BeautifulSoup(html_content, "html.parser")
-    for tag in soup(["script", "style", "noscript", "svg", "nav", "footer", "iframe"]):
-        tag.decompose()
-    text = soup.get_text(separator="\n")
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return "\n".join(lines[:120])
-
+    for _ in range(20):
+        time.sleep(0.4)
+        try:
+            urllib.request.urlopen(f"{CDP_URL}/json/version", timeout=1.0)
+            return True
+        except Exception:
+            continue
+    return False
 
 def main():
-    args = parse_args()
-    os.makedirs(PROFILE_DIR, exist_ok=True)
     os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
-    clean_locks()
-
-    action = str(args.get("action", "navigate")).lower().strip()
-    url = str(args.get("url") or args.get("link") or "").strip()
-    username = str(args.get("username") or args.get("user") or args.get("email") or "").strip()
-    password = str(args.get("password") or args.get("pass") or "").strip()
-
-    # 1. Interactive Desktop GUI Login Window
-    if action in ("open_window", "open_headed", "gui", "desktop_window", "setup_login"):
-        target_url = url or "https://www.instagram.com/accounts/login/"
-        if not target_url.startswith(("http://", "https://")):
-            target_url = f"https://{target_url}"
-
-        print(json.dumps({
-            "status": "waiting",
-            "message": f"Opening browser window on desktop for {target_url}. Please complete login on screen."
-        }))
-
-        with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=PROFILE_DIR,
-                headless=False,
-                viewport={"width": 1280, "height": 800},
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-            )
-            page = context.pages[0] if context.pages else context.new_page()
-            page.goto(target_url)
-
-            # Wait up to 3 minutes for user to log in and navigate away from login/accounts
-            try:
-                page.wait_for_url(lambda u: "login" not in u and "accounts" not in u, timeout=180000)
-                time.sleep(2.0)
-                final_url = page.url
-                context.close()
-                print(json.dumps({
-                    "status": "success",
-                    "action": "setup_login",
-                    "url": final_url,
-                    "message": "Login successful! Session cookies saved permanently."
-                }, indent=2))
-            except Exception as e:
-                context.close()
-                print(json.dumps({"error": f"Headed login session closed or timed out: {e}"}))
-        return
-
-    # 2. Headless Mode (Default)
-    if (username and password) or action in ("login", "headless_login"):
-        action = "login"
-        if not url:
-            url = "https://www.instagram.com/accounts/login/"
-
-    if not url:
-        print(json.dumps({
-            "status": "error",
-            "error": "No URL provided for browser navigation."
-        }))
-        return
-
-    if not url.startswith(("http://", "https://")):
-        url = f"https://{url}"
-
-    shot_filename = f"web_{int(time.time())}.png"
-    shot_path = os.path.join(SCREENSHOTS_DIR, shot_filename)
-
-    result = {
-        "url": url,
-        "action": action
-    }
-
+    raw = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else "{}"
     try:
-        with sync_playwright() as p:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=PROFILE_DIR,
-                headless=True,
-                viewport={"width": 1280, "height": 800},
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-            )
+        args = json.loads(raw) if isinstance(raw, str) else raw
+        if not isinstance(args, dict):
+            args = {"action": "goto", "url": str(raw)}
+    except Exception:
+        args = {"action": "goto", "url": str(raw)}
 
-            # Reuse existing page instead of creating a second blank tab
-            page = context.pages[0] if context.pages else context.new_page()
-            page.set_default_timeout(30000)
+    action = str(args.get("action", "inspect")).lower().strip()
+    url = str(args.get("url") or "").strip()
+    query = str(args.get("query") or args.get("song") or args.get("search") or "").strip()
+    element_id = args.get("id") or args.get("index") or args.get("element_id")
+    text_to_type = str(args.get("text") or "").strip()
 
-            # Stealth: Strip navigator.webdriver flag
-            page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+    if not ensure_chrome_running():
+        print(json.dumps({"status": "error", "error": "Failed to launch or connect to Chrome on CDP port 9222."}))
+        sys.exit(1)
 
-            # Navigate
+    shot_path = os.path.join(SCREENSHOTS_DIR, f"browser_{int(time.time())}.png")
+
+    with sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(CDP_URL)
+        context = browser.contexts[0] if browser.contexts else browser.new_context()
+        page = context.pages[-1] if context.pages else context.new_page()
+        page.bring_to_front()
+        page.set_default_timeout(20000)
+
+        # 1. Dedicated 1-Step YouTube Search & Play
+        if action in ("play_youtube", "youtube_play", "youtube"):
+            search_q = query or text_to_type or url
+            if not search_q:
+                print(json.dumps({"status": "error", "error": "Missing 'query' for YouTube playback."}))
+                sys.exit(1)
+            yt_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote(search_q)}"
+            page.goto(yt_url, wait_until="domcontentloaded")
+            # Wait for video titles to render in DOM
+            page.wait_for_selector("ytd-video-renderer a#video-title", timeout=15000)
+            time.sleep(1.0)
+            first_video = page.locator("ytd-video-renderer a#video-title").first
+            video_title = first_video.inner_text().strip()
+            first_video.click()
+            time.sleep(2.5)
+            # Ensure video plays if paused
+            try:
+                page.evaluate("() => { const v = document.querySelector('video'); if (v && v.paused) v.play(); }")
+            except Exception:
+                pass
+            page.screenshot(path=shot_path)
+            print(json.dumps({
+                "status": "success",
+                "action": "play_youtube",
+                "playing_title": video_title,
+                "current_url": page.url,
+                "file_path": shot_path,
+            }, indent=2))
+            return
+
+        # 2. Navigate to URL
+        if action in ("goto", "navigate", "open"):
+            if not url:
+                print(json.dumps({"status": "error", "error": "No URL provided. Pass 'url' in args."}))
+                sys.exit(1)
+            if not url.startswith(("http://", "https://")):
+                url = f"https://{url}"
             page.goto(url, wait_until="domcontentloaded")
+            time.sleep(1.5)
+
+        # 3. Click by Element ID [index] or Text Match
+        elif action == "click":
+            if element_id is not None:
+                loc = page.locator(f'[data-muse-id="{element_id}"]').first
+                loc.scroll_into_view_if_needed()
+                loc.click(timeout=8000)
+            elif text_to_type or query:
+                target_txt = text_to_type or query
+                page.get_by_text(target_txt, exact=False).first.click(timeout=8000)
+            time.sleep(1.5)
+
+        # 4. Type into Element ID [index] or active search/input box
+        elif action in ("type", "fill", "search"):
+            if element_id is not None:
+                loc = page.locator(f'[data-muse-id="{element_id}"]').first
+                loc.click()
+                loc.fill(text_to_type or query)
+            else:
+                loc = page.locator('input[type="search"], input[name="search_query"], input[name="q"], input[type="text"], textarea').first
+                loc.click()
+                loc.fill(text_to_type or query)
+            if args.get("submit", True):
+                page.keyboard.press("Enter")
             time.sleep(2.0)
 
-            # Headless Login Flow
-            if action == "login" and username and password:
-                user_selectors = [
-                    'input[name="username"]',
-                    'input[name="email"]',
-                    'input[type="text"]',
-                    'input[type="email"]',
-                ]
-                pass_selectors = [
-                    'input[name="password"]',
-                    'input[name="pass"]',
-                    'input[type="password"]',
-                ]
-                submit_selectors = [
-                    'button[type="submit"]',
-                    'input[type="submit"]',
-                    'form button',
-                    '[role="button"]:has-text("Log In")',
-                    '[role="button"]:has-text("Sign in")',
-                ]
+        # 5. Scroll
+        elif action == "scroll":
+            direction = str(args.get("direction", "down")).lower()
+            delta = 600 if direction == "down" else -600
+            page.mouse.wheel(0, delta)
+            time.sleep(1.0)
 
-                # Dismiss cookie popups if present
-                for cookie_btn in ('button:has-text("Allow all cookies")', 'button:has-text("Accept")', 'button:has-text("Decline optional cookies")'):
-                    try:
-                        btn = page.locator(cookie_btn).first
-                        if btn.is_visible():
-                            btn.click(timeout=1500)
-                            time.sleep(1.0)
-                            break
-                    except Exception:
-                        pass
+        # Index all visible interactive elements on the current page
+        interactive_elements = page.evaluate(DOM_INDEXER_JS)
+        page.screenshot(path=shot_path)
 
-                # Fill credentials
-                filled_user = False
-                for sel in user_selectors:
-                    try:
-                        loc = page.locator(sel).first
-                        if loc.is_visible():
-                            loc.fill(username)
-                            filled_user = True
-                            break
-                    except Exception:
-                        continue
-
-                filled_pass = False
-                for sel in pass_selectors:
-                    try:
-                        loc = page.locator(sel).first
-                        if loc.is_visible():
-                            loc.fill(password)
-                            filled_pass = True
-                            break
-                    except Exception:
-                        continue
-
-                submitted = False
-                if filled_user and filled_pass:
-                    for sel in submit_selectors:
-                        try:
-                            loc = page.locator(sel).first
-                            if loc.is_visible():
-                                loc.click()
-                                submitted = True
-                                break
-                        except Exception:
-                            continue
-
-                    if not submitted:
-                        page.keyboard.press("Enter")
-                        submitted = True
-
-                    try:
-                        page.wait_for_load_state("networkidle", timeout=8000)
-                    except Exception:
-                        time.sleep(3.0)
-
-                result["login_attempted"] = True
-                result["username_filled"] = filled_user
-                result["password_filled"] = filled_pass
-                result["submitted"] = submitted
-
-                page_text_lower = page.inner_text("body").lower()
-                if any(x in page_text_lower for x in ("security code", "two-factor", "verification code", "enter the 6-digit")):
-                    result["login_status"] = "2FA_REQUIRED"
-                    result["notice"] = "Instagram requires a 2FA/SMS code. Run with action='open_window' to solve on desktop."
-                elif any(x in page_text_lower for x in ("incorrect password", "the password that you've entered is incorrect", "sorry, your password was incorrect")):
-                    result["login_status"] = "INVALID_PASSWORD"
-                    result["notice"] = "Instagram reported the password was incorrect."
-                elif "/login" not in page.url and any(x in page_text_lower for x in ("home", "search", "explore", "reels", "messages", "profile")):
-                    result["login_status"] = "SUCCESS"
-                    result["notice"] = "Successfully logged in headlessly! Session cookies saved permanently."
-                else:
-                    result["login_status"] = "PENDING_OR_CHALLENGED"
-                    result["notice"] = f"Submitted. Current URL: {page.url}"
-
-            # General Click Action
-            click_sel = args.get("click_selector") or args.get("selector")
-            if action in ("click", "interact") and click_sel:
-                try:
-                    page.click(click_sel, timeout=5000)
-                    time.sleep(1.0)
-                    result["clicked_selector"] = click_sel
-                except Exception as e:
-                    result["click_warning"] = str(e)
-
-            # General Type Action
-            type_text = args.get("text") or args.get("type_text")
-            if action in ("type", "fill") and click_sel and type_text:
-                try:
-                    page.fill(click_sel, type_text, timeout=5000)
-                    if args.get("submit", False):
-                        page.keyboard.press("Enter")
-                        time.sleep(2.0)
-                    result["typed_into"] = click_sel
-                except Exception as e:
-                    result["type_warning"] = str(e)
-
-            # Capture Content & Screenshot
-            title = page.title()
-            current_url = page.url
-            readable_text = clean_html(page.content())
-            page.screenshot(path=shot_path, full_page=False)
-
-            result["title"] = title
-            result["current_url"] = current_url
-            result["text_content"] = readable_text[:3000]
-            result["file_path"] = shot_path
-
-            context.close()
-
-        print(json.dumps(result, indent=2))
-
-    except Exception as e:
         print(json.dumps({
-            "error": str(e),
-            "url": url,
-            "action": action
+            "status": "success",
+            "action": action,
+            "title": page.title(),
+            "current_url": page.url,
+            "interactive_elements": interactive_elements,
+            "file_path": shot_path,
         }, indent=2))
-
 
 if __name__ == "__main__":
     main()

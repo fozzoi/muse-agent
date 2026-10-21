@@ -3,7 +3,7 @@
     "description": "Control the user's REAL visible desktop screen (1920x1080), mouse, and keyboard. Actions: 'focus' (args: {'text': 'chrome' or 'zen'}), 'click' (args: {'x': 600, 'y': 320} - safe canvas Y: 80-960; NEVER click Y > 980 or Y < 40 to avoid system dock/panel misclicks), 'find_and_click' (args: {'target_text': 'song or button'}), 'type' (args: {'text': '...'}), 'key' (args: {'text': 'Return' or 'space'}), 'minimize' (args: {})."
   },
   "browser_agent": {
-    "description": "SILENT HEADLESS background browser. Use ONLY for silent background web scraping or data extraction where the user DOES NOT need to see the screen or hear playback. DO NOT use when interacting with the user's open desktop windows."
+    "description": "Hermes-style Persistent Chrome Browser Controller. Controls the user's REAL visible Chrome window via CDP and returns a numbered list of interactive elements [id] on the page. Actions: 1) 'play_youtube' (args: {'action': 'play_youtube', 'query': 'song or video name'}) -> opens YouTube, searches, and plays the video immediately. 2) 'goto' (args: {'action': 'goto', 'url': 'https://...'}) -> navigates and returns all clickable elements with IDs. 3) 'click' (args: {'action': 'click', 'id': 12}) -> clicks element [12] or by text {'action': 'click', 'text': '...'}. 4) 'type' (args: {'action': 'type', 'id': 5, 'text': '...', 'submit': true}). 5) 'inspect' (args: {'action': 'inspect'}) -> reads current open tab and lists interactive element IDs."
   },
   "take_screenshot": {
     "description": "Captures the active Linux desktop display and automatically runs AI vision analysis to report visible windows, UI elements, and coordinates. Call at most ONCE to inspect the screen before taking action, and ONCE at the end to confirm."

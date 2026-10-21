@@ -584,19 +584,23 @@ def _infer_action_from_context(goal: dict) -> dict:
     # If no real actions yet, the first thing to do is focus/launch the app
     if real_actions == 0:
         # Detect what app the goal needs
-        if any(kw in objective_lower for kw in ["chrome", "youtube", "yt", "video", "play"]):
+        if any(kw in objective_lower for kw in ["chrome", "youtube", "yt", "video", "play", "song"]):
+            clean_q = goal["objective"]
+            for prefix in ["play", "open", "search", "stream", "listen to", "watch", "on youtube", "in chrome", "in youtube"]:
+                clean_q = re.sub(rf"(?i)\b{re.escape(prefix)}\b", "", clean_q)
+            clean_q = clean_q.strip() or goal["objective"]
             return {
                 "action": "USE_TOOL",
-                "tool_name": "sys_exec",
-                "args": {"command": "google-chrome 'https://www.youtube.com' &"},
-                "thought": "Launching Chrome with YouTube as the first real action"
+                "tool_name": "browser_agent",
+                "args": {"action": "play_youtube", "query": clean_q},
+                "thought": f"Using Hermes browser_agent to directly play YouTube video: '{clean_q}'"
             }
         elif any(kw in objective_lower for kw in ["zen", "browser", "web"]):
             return {
                 "action": "USE_TOOL",
-                "tool_name": "desktop_navigator",
-                "args": {"action": "focus", "text": "zen"},
-                "thought": "Focusing Zen Browser"
+                "tool_name": "browser_agent",
+                "args": {"action": "inspect"},
+                "thought": "Inspecting persistent browser session via browser_agent"
             }
         elif any(kw in objective_lower for kw in ["file", "folder", "directory", "nautilus"]):
             return {

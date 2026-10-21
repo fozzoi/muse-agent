@@ -243,13 +243,14 @@ def run_tool(name: str, args_payload: dict | str = "", allow_auto_install: bool 
         env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
         env["VIRTUAL_ENV"] = os.path.join(backend_dir, "venv")
 
+    tool_timeout = 90 if name in ("browser_agent", "goal_manager") else 60
     try:
         res = subprocess.run(
             [python_bin, script_path, arg_str],
             env=env,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=tool_timeout,
         )
         if res.returncode != 0:
             err = (
