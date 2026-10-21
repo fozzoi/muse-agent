@@ -86,25 +86,23 @@ def capture_screen() -> str:
 def _exec_input(ydotool_cmds: list[list[str]], xdotool_cmd: list[str]) -> bool:
     env = get_env()
 
-    # Try ydotool commands
-    ydotool_ok = True
+    # Try ydotool commands (hardware-level uinput simulation, zero portal popups)
     if ydotool_cmds:
         try:
+            all_ok = True
             for cmd in ydotool_cmds:
                 res = subprocess.run(cmd, env=env, capture_output=True, timeout=5)
                 if res.returncode != 0:
-                    ydotool_ok = False
+                    all_ok = False
                     break
+            if all_ok:
+                return True
         except Exception:
-            ydotool_ok = False
-    else:
-        ydotool_ok = False
+            pass
 
-    if ydotool_ok:
-        return True
-
-    # Fallback to xdotool
-    if xdotool_cmd:
+    # Fallback to xdotool ONLY on pure X11 displays (never on Wayland, which triggers the 'Remote Desktop' portal popup)
+    session_type = os.environ.get("XDG_SESSION_TYPE", "").lower()
+    if session_type != "wayland" and xdotool_cmd:
         try:
             res = subprocess.run(xdotool_cmd, env=env, capture_output=True, timeout=5)
             if res.returncode == 0:
