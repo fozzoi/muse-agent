@@ -20,6 +20,7 @@ from core.memory import add_message, format_history_context, clear_session, get_
 from core.watchdog import watchdog
 from core.user_profile import get_user_profile_context, format_profile_for_telegram, add_learned_rule, add_memory
 from core.evolution import reflect_and_evolve
+from core.quota_manager import get_all_cooldowns
 from main import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, _parse_json
 
 # Module-level variable to hold file handle so it's not garbage-collected
@@ -87,6 +88,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Send screenshots or photos for vision analysis\n"
         "• Use /profile to see your evolved profile & learned rules\n"
         "• Use /learn <fact> to teach Muse preferences directly\n"
+        "• Use /quota to inspect model rates & circuit breaker status\n"
         "• Use /login <url> to authenticate web sessions on desktop\n"
         "• Use /clear to reset conversation memory"
     )
@@ -117,6 +119,23 @@ async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_learned_rule(fact)
     add_memory(fact)
     await update.message.reply_text(f"🧠 *Learned:* \"_{fact}_\"\n\nAdded to your persistent profile!", parse_mode="Markdown")
+
+async def quota_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Displays which models are currently banned or cooling down due to 429 quota exhaustion."""
+    if not await is_authorized(update):
+        return
+    cooldowns = get_all_cooldowns()
+    if not cooldowns:
+        await update.message.reply_text("✅ *All Models Operational*\n\nAll AI models across Gemini, Groq, and Mistral are active with zero quota cooldowns!", parse_mode="Markdown")
+        return
+
+    lines = ["⚡ *Active Model Quota & Circuit Breaker Status*", ""]
+    for k, v in cooldowns.items():
+        lines.append(f"• `{k}`: *{v['remaining_human']}* left\n  _({v['reason']})_")
+
+    lines.append("\n👁️ *Active Vision Fallbacks:* `gemini-3.5-flash-lite`, `gemini-2.5-flash`, `pixtral-12b`")
+    lines.append("⚡ *Active Coder Fallbacks:* `codestral-latest`, `gemini-2.5-flash`, `openai/gpt-oss-120b`")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Triggers the desktop browser window to authenticate a service."""
@@ -616,7 +635,7 @@ def main():
             return
         print(f"[Telegram Bot] Warning: {context.error}", flush=True)
 
-    request = HTTPXRequest(connect_timeout=30.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=60.0)
+    request = HTTPXRequest(connect_timeout=45.0, read_timeout=60.0, write_timeout=60.0, pool_timeout=60.0)
     app = ApplicationBuilder().token(token).request(request).post_init(post_init).build()
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start))
@@ -625,12 +644,23 @@ def main():
     app.add_handler(CommandHandler("profile", profile_command))
     app.add_handler(CommandHandler("memory", profile_command))
     app.add_handler(CommandHandler("learn", learn_command))
+    app.add_handler(CommandHandler("quota", quota_command))
+    app.add_handler(CommandHandler("status", quota_command))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(IMAGE_FILTER, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("[Telegram Bot] Bot is polling for messages...", flush=True)
-    app.run_polling(close_loop=False, allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
+    while True:
+        try:
+            print("[Telegram Bot] Bot is polling for messages...", flush=True)
+            app.run_polling(close_loop=False, allowed_updates=Update.ALL_TYPES, drop_pending_updates=False)
+            break
+        except (telegram.error.TimedOut, telegram.error.NetworkError) as e:
+            print(f"[Telegram Bot] Transient network error on polling: {e}. Reconnecting in 3s...", flush=True)
+            time.sleep(3)
+        except Exception as e:
+            print(f"[Telegram Bot] Polling interrupted: {e}", flush=True)
+            break
 
 if __name__ == "__main__":
     main()
