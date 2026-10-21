@@ -2,12 +2,13 @@ import os
 import sys
 import re
 import html
+import time
 import json
 import base64
 import fcntl
 import asyncio
 import httpx
-from telegram import Update
+from telegram import Update, BotCommand
 import telegram.error
 from telegram.request import HTTPXRequest
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, CommandHandler, filters
@@ -25,6 +26,19 @@ from main import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, TELEGRAM_SYNTHES
 
 # Module-level variable to hold file handle so it's not garbage-collected
 _LOCK_FILE = None
+
+# Active tasks registry: chat_id -> dict
+# {
+#     "task": asyncio.Task,
+#     "status_msg": telegram.Message,
+#     "prompt": str,
+#     "step": int,
+#     "max_steps": int,
+#     "current_tool": str | None,
+#     "cancel_event": asyncio.Event,
+#     "start_time": float,
+# }
+ACTIVE_TASKS: dict[str, dict] = {}
 
 IMAGE_FILTER = (
     filters.PHOTO
@@ -83,15 +97,155 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     print(f"[Telegram Bot] /start from {update.effective_chat.id}", flush=True)
     await update.message.reply_text(
-        "👋 Muse Agent is online!\n\n"
-        "• Send tasks, questions, or voice notes\n"
-        "• Send screenshots or photos for vision analysis\n"
-        "• Use /profile to see your evolved profile & learned rules\n"
-        "• Use /learn <fact> to teach Muse preferences directly\n"
-        "• Use /quota to inspect model rates & circuit breaker status\n"
-        "• Use /login <url> to authenticate web sessions on desktop\n"
-        "• Use /clear to reset conversation memory"
+        "👋 *Muse Desktop Agent is Online!*\n\n"
+        "• Send tasks, system questions, or voice notes\n"
+        "• Send screenshots or photos for instant vision analysis\n"
+        "• Use `/stop` to halt any ongoing task immediately\n"
+        "• Use `/status` to view active task progress & model quotas\n"
+        "• Use `/screen` to capture and inspect the active desktop\n"
+        "• Use `/clear` to reset conversation context\n"
+        "• Use `/profile` to view your evolved preferences\n"
+        "• Use `/help` to see all commands",
+        parse_mode="Markdown",
     )
+
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Halts and cancels any currently executing task for the user."""
+    if not await is_authorized(update):
+        return
+
+    chat_id = str(update.effective_chat.id)
+    task_info = ACTIVE_TASKS.get(chat_id)
+    if not task_info or (task_info.get("task") and task_info["task"].done()):
+        ACTIVE_TASKS.pop(chat_id, None)
+        await update.message.reply_text("ℹ️ No active task is currently running. Muse is idle and ready.")
+        return
+
+    print(f"[Telegram Bot] Stopping active task for chat {chat_id} upon user request", flush=True)
+
+    cancel_event: asyncio.Event = task_info.get("cancel_event")
+    if cancel_event:
+        cancel_event.set()
+
+    task: asyncio.Task = task_info.get("task")
+    if task and not task.done():
+        task.cancel()
+
+    status_msg = task_info.get("status_msg")
+    if status_msg:
+        try:
+            await safe_edit_text(status_msg, "🛑 *Task halted by user request.*", parse_mode="Markdown")
+        except Exception:
+            pass
+
+    prompt_snippet = task_info.get("prompt", "")[:50]
+    await update.message.reply_text(
+        f"🛑 *Task Stopped!*\n\n"
+        f"Prompt: \"_{prompt_snippet}..._\"\n\n"
+        f"Muse has halted all running actions and returned to idle.",
+        parse_mode="Markdown",
+    )
+    ACTIVE_TASKS.pop(chat_id, None)
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Displays active task status, running tool, and operational model quotas."""
+    if not await is_authorized(update):
+        return
+
+    chat_id = str(update.effective_chat.id)
+    task_info = ACTIVE_TASKS.get(chat_id)
+
+    lines = ["⚡ *Muse Status & Activity*"]
+    if task_info and not task_info.get("task").done():
+        elapsed = int(time.time() - task_info.get("start_time", time.time()))
+        lines.extend([
+            "",
+            "🏃 *Current Activity:* EXECUTING TASK",
+            f"• *Prompt:* \"_{task_info.get('prompt', '')[:60]}..._\"",
+            f"• *Progress:* Step {task_info.get('step', 1)} of {task_info.get('max_steps', 4)}",
+            f"• *Current Tool:* `{task_info.get('current_tool') or 'Planning / Visual Inspection'}`",
+            f"• *Elapsed Time:* {elapsed}s",
+            "",
+            "👉 *Need to abort?* Send `/stop` to halt immediately.",
+        ])
+    else:
+        lines.extend([
+            "",
+            "🟢 *Current Activity:* IDLE (Ready for tasks)",
+        ])
+
+    lines.append("")
+    summary = get_model_operational_summary()
+    lines.append(f"🤖 *Active Engine:* `{summary['active_model']}`")
+
+    cooling = summary.get("cooling_models", [])
+    if cooling:
+        lines.append(f"⛔ *Cooldown ({len(cooling)}):* " + ", ".join([f"`{m['key']}` ({m['cooldown_remaining']})" for m in cooling]))
+    else:
+        lines.append("✅ *Models Out of Quota:* None")
+
+    healthy = summary.get("healthy_models", [])
+    if healthy:
+        top_models = [f"`{m['key']}`: {m['remaining_requests']} left" for m in healthy[:3]]
+        lines.append(f"🟢 *Remaining Quota:* " + ", ".join(top_models))
+
+    manifest = load_local_manifest()
+    lines.append(f"🛠️ *Loaded Tools ({len(manifest)}):* `" + ", ".join(list(manifest.keys())[:6]) + "...`")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+async def screen_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Captures live desktop screenshot and delivers it to Telegram with instant AI analysis."""
+    if not await is_authorized(update):
+        return
+
+    status_msg = await update.message.reply_text("📸 Capturing active desktop screen (1920x1080)...")
+    loop = asyncio.get_running_loop()
+    success, output = await loop.run_in_executor(None, run_tool, "take_screenshot", {})
+    if not success:
+        await status_msg.edit_text(f"❌ Failed to capture screenshot: {output}")
+        return
+
+    img_path = extract_image_from_tool_output(output)
+    if not img_path or not os.path.isfile(img_path):
+        await status_msg.edit_text(f"❌ Screenshot file not found: {output}")
+        return
+
+    await safe_edit_text(status_msg, "👁️ Analyzing screen with AI Vision...", parse_mode="Markdown")
+    try:
+        with open(img_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        vis_res = await generate(
+            "vision",
+            "Describe what is currently visible on the active 1920x1080 desktop: active window, visible media/video playback, and system state.",
+            image_data=b64,
+            mime_type="image/png",
+        )
+        caption = f"🖥️ *Active Desktop (1920x1080)*\n\n{vis_res.get('text', '')}"
+        await deliver_response(update, status_msg, caption, image_file=img_path)
+    except Exception:
+        await deliver_response(update, status_msg, f"🖥️ Desktop captured: `{os.path.basename(img_path)}`", image_file=img_path)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Displays the clean, curated list of Muse commands."""
+    if not await is_authorized(update):
+        return
+    help_text = (
+        "🤖 *Muse Desktop Agent Commands:*\n\n"
+        "• `/stop` — Halt and cancel the currently running task immediately\n"
+        "• `/status` — View current agent activity, steps, and model quotas\n"
+        "• `/screen` — Capture live desktop screenshot and see what's on screen\n"
+        "• `/clear` — Clear conversation memory and start fresh\n"
+        "• `/profile` — View autonomous Hermes profile and learned preferences\n"
+        "• `/learn <rule>` — Teach Muse a new preference or rule directly\n"
+        "• `/quota` — Full model rate limits and circuit breaker diagnostics\n"
+        "• `/login <url>` — Open desktop browser window to authenticate web services\n"
+        "• `/help` — Show this command reference\n\n"
+        "💬 *Tips:*\n"
+        "• You can also send voice notes or images anytime!\n"
+        "• If a task is executing, simply reply `stop` or `/stop` to halt it instantly."
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_authorized(update):
@@ -382,15 +536,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, cus
     chat_id = str(update.effective_chat.id)
     session_id = f"tg_{chat_id}"
     user_prompt = (custom_prompt or update.message.text or "").strip()
+
+    # 1. Check if user typed a stop phrase while a task is running
+    if user_prompt.lower() in ("stop", "cancel", "halt", "abort", "/stop", "/cancel"):
+        if chat_id in ACTIVE_TASKS and not ACTIVE_TASKS[chat_id]["task"].done():
+            await stop_command(update, context)
+            return
+
+    # 2. If a task is already executing in this chat, cleanly halt previous before starting new
+    if chat_id in ACTIVE_TASKS and not ACTIVE_TASKS[chat_id]["task"].done():
+        prev = ACTIVE_TASKS[chat_id]
+        if prev.get("cancel_event"):
+            prev["cancel_event"].set()
+        if prev.get("task") and not prev["task"].done():
+            prev["task"].cancel()
+        await update.message.reply_text("🔄 Halting previous task to execute your new instruction...", quote=True)
+        await asyncio.sleep(0.1)
+
     print(f"[Telegram Bot] Received request from {chat_id}: {user_prompt[:80]}", flush=True)
     status_msg = await update.message.reply_text("🤔 Routing request...")
+
+    cancel_event = asyncio.Event()
+    current_task = asyncio.current_task()
+    max_steps = 4
+
+    ACTIVE_TASKS[chat_id] = {
+        "task": current_task,
+        "status_msg": status_msg,
+        "prompt": user_prompt,
+        "step": 0,
+        "max_steps": max_steps,
+        "current_tool": "Routing & Planning",
+        "cancel_event": cancel_event,
+        "start_time": time.time(),
+    }
 
     try:
         manifest = load_local_manifest()
         history_context = format_history_context(session_id)
         user_profile_context = get_user_profile_context()
 
-        max_steps = 4
         step_count = 0
         tool_trace = []
         combined_raw = []
@@ -399,7 +584,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, cus
         created_tool_info = None
 
         while step_count < max_steps:
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
+
             step_count += 1
+            if chat_id in ACTIVE_TASKS:
+                ACTIVE_TASKS[chat_id]["step"] = step_count
+                ACTIVE_TASKS[chat_id]["current_tool"] = "Routing & Planning"
             tool_names = list(manifest.keys())
             steps_left = max(0, max_steps - step_count)
             tools_context = f"LOCAL TOOL REGISTRY: {len(tool_names)} tools loaded ({', '.join(tool_names)})\nEXECUTION BUDGET: Step {step_count} of {max_steps} ({steps_left} steps remaining in this turn)"
@@ -452,11 +643,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, cus
                 if not t_name:
                     print(f"[Telegram Bot] Step {step_count}: USE_TOOL with missing tool_name! Breaking.", flush=True)
                     break
+
+                if chat_id in ACTIVE_TASKS:
+                    ACTIVE_TASKS[chat_id]["current_tool"] = t_name
+
                 await safe_edit_text(status_msg, f"⚙️ Step {step_count}: Running `{t_name}`...", parse_mode="Markdown")
 
+                if cancel_event.is_set():
+                    raise asyncio.CancelledError()
+
                 print(f"[Telegram Bot] Step {step_count}: Running '{t_name}' with {tool_args}", flush=True)
-                success, output = run_tool(t_name, tool_args)
+                loop = asyncio.get_running_loop()
+                success, output = await loop.run_in_executor(None, run_tool, t_name, tool_args)
                 print(f"[Telegram Bot] Step {step_count}: Tool '{t_name}' success={success} (output {len(output)} chars)", flush=True)
+
+                if cancel_event.is_set():
+                    raise asyncio.CancelledError()
 
                 if t_name == "take_screenshot" and success:
                     img_path = extract_image_from_tool_output(output)
@@ -573,12 +775,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, cus
         # Hermes autonomous evolution: reflect on this turn in the background
         asyncio.create_task(reflect_and_evolve(user_prompt, reply_text, tool_trace))
 
+    except asyncio.CancelledError:
+        print(f"[Telegram Bot] Task execution cleanly cancelled for chat {chat_id}", flush=True)
+        try:
+            await safe_edit_text(status_msg, "🛑 *Task halted by user request.*", parse_mode="Markdown")
+        except Exception:
+            pass
+        return
     except Exception as e:
         print(f"[Telegram Bot] Message error: {e}", flush=True)
         try:
             await status_msg.edit_text(f"⚠️ Error: {str(e)}")
         except Exception:
             await update.message.reply_text(f"⚠️ Error: {str(e)}")
+    finally:
+        ACTIVE_TASKS.pop(chat_id, None)
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
@@ -706,6 +917,24 @@ def main():
         asyncio.set_event_loop(loop)
 
     async def post_init(application) -> None:
+        # Register Muse's clean command menu, eliminating old Hermes commands
+        commands = [
+            BotCommand("stop", "Halt and cancel the currently running task immediately"),
+            BotCommand("status", "Show active task state, running tool, and model quotas"),
+            BotCommand("screen", "Capture desktop screenshot and view current screen"),
+            BotCommand("clear", "Reset conversation memory and start fresh"),
+            BotCommand("profile", "View autonomous user profile & learned preferences"),
+            BotCommand("learn", "Teach Muse a new preference or rule directly"),
+            BotCommand("quota", "Inspect model rate limits & circuit breakers"),
+            BotCommand("login", "Open desktop browser window to authenticate web services"),
+            BotCommand("help", "Show Muse commands and capabilities"),
+        ]
+        try:
+            await application.bot.set_my_commands(commands)
+            print("[Telegram Bot] ✅ Clean Muse slash commands registered with Telegram.", flush=True)
+        except Exception as ce:
+            print(f"[Telegram Bot] Warning: Failed to set Telegram bot commands: {ce}", flush=True)
+
         asyncio.create_task(watchdog.run(application.bot, Config.TELEGRAM_ALLOWED_USERS))
 
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -718,13 +947,20 @@ def main():
     app = ApplicationBuilder().token(token).request(request).post_init(post_init).build()
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("stop", stop_command))
+    app.add_handler(CommandHandler("cancel", stop_command))
+    app.add_handler(CommandHandler("abort", stop_command))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("screen", screen_command))
+    app.add_handler(CommandHandler("screenshot", screen_command))
     app.add_handler(CommandHandler("clear", clear_chat))
-    app.add_handler(CommandHandler("login", login_command))
+    app.add_handler(CommandHandler("reset", clear_chat))
     app.add_handler(CommandHandler("profile", profile_command))
     app.add_handler(CommandHandler("memory", profile_command))
     app.add_handler(CommandHandler("learn", learn_command))
     app.add_handler(CommandHandler("quota", quota_command))
-    app.add_handler(CommandHandler("status", quota_command))
+    app.add_handler(CommandHandler("login", login_command))
+    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(IMAGE_FILTER, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
