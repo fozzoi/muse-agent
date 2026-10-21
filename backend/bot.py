@@ -83,6 +83,22 @@ def extract_image_from_tool_output(output: str) -> str | None:
                     exp = os.path.expanduser(val.strip())
                     if os.path.isfile(exp) and exp.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
                         return exp
+
+            # Check if output_dir with image files was returned
+            out_dir = data.get("output_dir")
+            if out_dir and isinstance(out_dir, str):
+                exp_dir = os.path.expanduser(out_dir.strip())
+                if os.path.isdir(exp_dir):
+                    flist = data.get("files", [])
+                    if isinstance(flist, list):
+                        for fn in flist:
+                            fp = os.path.join(exp_dir, str(fn))
+                            if os.path.isfile(fp) and fp.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                                return fp
+                    for fn in sorted(os.listdir(exp_dir)):
+                        fp = os.path.join(exp_dir, fn)
+                        if os.path.isfile(fp) and fp.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                            return fp
     except Exception:
         pass
 
@@ -238,6 +254,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         combined_raw = []
         images_collected = []
         created_tool_name = None
+        created_tool_info = None
 
         while step_count < max_steps:
             step_count += 1
@@ -318,6 +335,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 print(f"[Telegram Bot] Step {step_count}: Synthesis result success={build_res.get('success')}", flush=True)
                 if build_res["success"]:
                     created_tool_name = t_name
+                    created_tool_info = build_res
                     tool_trace.append({"tool": t_name, "args": tool_args, "output": build_res["output"]})
                     combined_raw.append(f"[{t_name}]:\n{build_res['output']}")
                     img = extract_image_from_tool_output(build_res["output"])
@@ -346,7 +364,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         reply_text = final["text"]
         if created_tool_name:
-            reply_text += f"\n\n*(Created tool: `{created_tool_name}.py`)*"
+            if created_tool_info and created_tool_info.get("is_package"):
+                reply_text += f"\n\n*(Created modular tool package: `tools/{created_tool_name}/` with {created_tool_info.get('files_count', 1)} files)*"
+            else:
+                reply_text += f"\n\n*(Created tool: `{created_tool_name}.py`)*"
 
         add_message(session_id, "user", user_prompt)
         add_message(session_id, "assistant", reply_text)

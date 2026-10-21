@@ -1,36 +1,52 @@
 import asyncio
 import httpx
 from core.config import Config
+from core.quota_manager import (
+    is_model_on_cooldown,
+    record_quota_failure,
+    record_success,
+    is_daily_quota_error,
+    format_remaining_time,
+)
 
-# Verified active models across providers
+# Heavy Waterfall Routes across verified providers
+# Heavy reasoning Pro models run first (e.g. 20 RPD limit). If exhausted, 24h circuit breaker triggers
+# and instantly routes to high-capability Flash, Codestral, and 120B models without stalling.
 ROLE_ROUTES = {
     "router": [
         ("gemini", "gemini-3.5-flash-lite"),
         ("groq", "openai/gpt-oss-20b"),
         ("gemini", "gemini-3.1-flash-lite"),
+        ("gemini", "gemini-3.5-flash"),
         ("mistral", "codestral-latest"),
     ],
     "coder": [
+        ("gemini", "gemini-3.1-pro-preview"),  # Top heavy 20 RPD Pro model
+        ("gemini", "gemini-pro-latest"),       # Flagship Pro fallback
+        ("gemini", "gemini-3.5-flash"),        # High-speed capable Flash
+        ("mistral", "codestral-latest"),       # Dedicated code synthesis engine
+        ("gemini", "gemini-2.5-flash"),        # Stable fallback
+        ("gemini", "gemini-3.5-flash-lite"),   # Fast lightweight
+        ("groq", "openai/gpt-oss-120b"),       # Fast 120B open-weights model
+    ],
+    "heavy": [
+        ("gemini", "gemini-3.1-pro-preview"),
+        ("gemini", "gemini-pro-latest"),
+        ("gemini", "gemini-3.5-flash"),
         ("mistral", "codestral-latest"),
-        ("gemini", "gemini-3.8-flash"),
-        ("gemini", "gemini-3.5-flash-lite"),
         ("groq", "openai/gpt-oss-120b"),
     ],
     "chat": [
+        ("gemini", "gemini-3.5-flash"),
         ("gemini", "gemini-3.5-flash-lite"),
         ("groq", "openai/gpt-oss-120b"),
-        ("gemini", "gemini-3.8-flash"),
         ("mistral", "codestral-latest"),
     ],
     "vision": [
+        ("gemini", "gemini-3.5-flash"),
         ("gemini", "gemini-3.5-flash-lite"),
-        ("gemini", "gemini-3.8-flash"),
+        ("gemini", "gemini-2.5-flash"),
         ("mistral", "pixtral-12b-2409"),
-    ],
-    "heavy": [
-        ("gemini", "gemini-3.8-flash"),
-        ("mistral", "codestral-latest"),
-        ("groq", "openai/gpt-oss-120b"),
     ],
 }
 
@@ -72,7 +88,7 @@ async def _call_openai_compatible(
         "messages": messages,
         "temperature": 0.2,
     }
-    async with httpx.AsyncClient(timeout=35.0) as client:
+    async with httpx.AsyncClient(timeout=45.0) as client:
         resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
@@ -123,7 +139,7 @@ async def _call_gemini(
         "contents": contents,
         "generationConfig": {"temperature": 0.2},
     }
-    async with httpx.AsyncClient(timeout=35.0) as client:
+    async with httpx.AsyncClient(timeout=50.0) as client:
         resp = await client.post(url, json=payload)
         resp.raise_for_status()
         data = resp.json()
@@ -151,7 +167,7 @@ async def generate(
     mime_type: str = "image/jpeg",
     history: list[dict] | None = None,
 ) -> dict:
-    """Routes request through providers with failover and rate-limit backoff."""
+    """Routes request through providers with failover, 24-hour quota circuit breaker, and rate-limit backoff."""
     if not system or system == "You are a helpful AI assistant.":
         if role == "vision":
             system = "You are Muse Vision, an expert AI visual analyst. Inspect the image closely and provide clear, accurate, and structured observations."
@@ -162,7 +178,16 @@ async def generate(
     errors = []
 
     for provider, model in routes:
-        for attempt in range(2):  # Quick 1-second retry on transient 429s
+        # 1. Circuit breaker: Check if model is on cooldown from a previous quota exhaustion / 429 / 404
+        is_cooling, rem_sec, reason = is_model_on_cooldown(provider, model)
+        if is_cooling:
+            print(
+                f"[Router] ⏳ Skipping {provider}/{model} ({format_remaining_time(rem_sec)} left on cooldown: {reason})",
+                flush=True,
+            )
+            continue
+
+        for attempt in range(2):  # Quick retry on transient RPM bursts
             try:
                 # 1. Groq (skip vision calls unless model supports it)
                 if provider == "groq" and Config.GROQ_API_KEY and not Config.GROQ_API_KEY.startswith("gsk_your"):
@@ -176,11 +201,13 @@ async def generate(
                         system,
                         history=history,
                     )
+                    record_success(provider, model)
                     return {"text": text, "provider": provider, "model": model}
 
                 # 2. Gemini (multimodal native)
                 elif provider == "gemini" and Config.GEMINI_API_KEY and not Config.GEMINI_API_KEY.startswith("AIza_your"):
                     text = await _call_gemini(model, prompt, system, image_data=image_data, mime_type=mime_type, history=history)
+                    record_success(provider, model)
                     return {"text": text, "provider": provider, "model": model}
 
                 # 3. Mistral
@@ -197,6 +224,7 @@ async def generate(
                         mime_type=mime_type,
                         history=history,
                     )
+                    record_success(provider, model)
                     return {"text": text, "provider": provider, "model": model}
 
                 # 4. OpenRouter Free Fallback (multimodal supported)
@@ -211,19 +239,39 @@ async def generate(
                         mime_type=mime_type,
                         history=history,
                     )
+                    record_success(provider, model)
                     return {"text": text, "provider": provider, "model": model}
 
                 break  # Skip to next provider if key is not configured
 
             except httpx.HTTPStatusError as e:
-                # If 429, wait 2 seconds and retry once before failing over
+                err_text = ""
+                try:
+                    err_text = e.response.text
+                except Exception:
+                    pass
+
+                # Register cooldown (24 hours for daily quota, 7 days for 404, 60s for burst)
+                record_quota_failure(provider, model, e.response.status_code, err_text)
+
+                # If daily quota limit exceeded or model deprecated (404), failover immediately without retry
+                if is_daily_quota_error(err_text) or e.response.status_code == 404:
+                    errors.append(f"{provider}/{model}: Status {e.response.status_code} ({err_text[:120]})")
+                    break
+
+                # If transient burst 429 and first attempt, wait 2s and retry
                 if e.response.status_code == 429 and attempt == 0:
                     await asyncio.sleep(2.0)
                     continue
-                errors.append(f"{provider}/{model}: Status {e.response.status_code}")
+
+                errors.append(f"{provider}/{model}: Status {e.response.status_code} ({err_text[:120]})")
                 break
+
             except Exception as e:
-                errors.append(f"{provider}/{model}: {str(e)}")
+                err_str = str(e)
+                if "timeout" in err_str.lower() or "connect" in err_str.lower():
+                    record_quota_failure(provider, model, 504, err_str)
+                errors.append(f"{provider}/{model}: {err_str}")
                 break
 
     raise RuntimeError(f"All providers failed for role '{role}'. Errors: {errors}")

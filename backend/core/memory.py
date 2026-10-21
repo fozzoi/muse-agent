@@ -13,7 +13,7 @@ os.makedirs(MEMORY_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 def extract_image_path(output: str) -> str | None:
-    """Extracts any image path referenced in tool JSON output or plain string."""
+    """Extracts any image path referenced in tool JSON output, output_dir, or plain string."""
     if not output:
         return None
     try:
@@ -25,6 +25,24 @@ def extract_image_path(output: str) -> str | None:
                     exp = os.path.expanduser(val.strip())
                     if os.path.isfile(exp) and exp.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
                         return exp
+
+            # Check if output_dir with image files was returned
+            out_dir = data.get("output_dir")
+            if out_dir and isinstance(out_dir, str):
+                exp_dir = os.path.expanduser(out_dir.strip())
+                if os.path.isdir(exp_dir):
+                    # Check files key first
+                    flist = data.get("files", [])
+                    if isinstance(flist, list):
+                        for fn in flist:
+                            fp = os.path.join(exp_dir, str(fn))
+                            if os.path.isfile(fp) and fp.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                                return fp
+                    # Check directory files
+                    for fn in sorted(os.listdir(exp_dir)):
+                        fp = os.path.join(exp_dir, fn)
+                        if os.path.isfile(fp) and fp.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                            return fp
     except Exception:
         pass
 

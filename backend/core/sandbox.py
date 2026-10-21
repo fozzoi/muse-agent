@@ -8,7 +8,7 @@ from core.router import generate
 from core.database import save_tool
 from core.journal import record_lesson, get_journal_context
 
-CODER_SYSTEM_PROMPT = """You are an elite Linux & Python Systems Engineer building standalone CLI tools for Muse Agent on Ubuntu Linux (GNOME/Wayland/PipeWire).
+CODER_SYSTEM_PROMPT = """You are an elite Linux & Python Systems Engineer building standalone CLI tools and tool packages for Muse Agent on Ubuntu Linux (GNOME/Wayland/PipeWire).
 
 RULES FOR WRITING TOOLS:
 1. Input is passed as a JSON string in `sys.argv[1]`. Parse it cleanly:
@@ -60,12 +60,46 @@ Or invoke the existing local tool 'take_screenshot.py'.
 The GNOME notification server does not implement GetNotifications. Do not call org.freedesktop.Notifications.GetNotifications.
 To check notifications, inspect system logs via 'journalctl -b --user -u org.gnome.Shell' or read app-specific state.
 
-7. For Linux system tasks:
+7. LINUX SYSTEM TASKS:
 - Audio/Media: Use wpctl or pactl via subprocess.check_output. Ensure env sets XDG_RUNTIME_DIR=/run/user/<uid> and DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus.
 - Hardware/System: Read /proc, /sys, shutil, psutil, or standard CLI utilities (df, free, ip, lsblk, upower).
 
-8. Print ONLY the clean final result (JSON or clear text) to stdout.
-9. Return ONLY valid Python code inside ```python ... ``` fences."""
+8. MULTI-FILE & PACKAGE TOOLS:
+For complex tools requiring modular architecture (submodules, scrapers, data models, helpers), you can structure the tool across multiple files using:
+### FILE: main.py
+```python
+import sys, json, os
+from helper import helper_fn
+...
+```
+### FILE: helper.py
+```python
+def helper_fn():
+    ...
+```
+The primary entrypoint MUST always be named `main.py`.
+
+9. MULTI-FILE & FOLDER OUTPUT GENERATION:
+If your tool generates files, charts, scraped assets, downloads, or datasets:
+- Save them in a dedicated output directory:
+```python
+output_dir = os.path.expanduser(f"~/Documents/muse-agent/backend/data/outputs/{tool_name}")
+os.makedirs(output_dir, exist_ok=True)
+```
+- Print a clean JSON summary object to stdout:
+```json
+{
+  "status": "success",
+  "output_dir": "/path/to/generated/folder",
+  "files": ["chart.png", "report.json"],
+  "count": 2,
+  "summary": "Generated 2 files successfully."
+}
+```
+
+10. Output Format:
+Print ONLY the clean final result (JSON or clear text) to stdout.
+Return code inside ```python ... ``` fences or ### FILE: blocks."""
 
 # Map commonly imported module names to their PyPI package names
 COMMON_PACKAGE_MAP = {
@@ -143,13 +177,48 @@ def auto_install_package(module_name: str) -> tuple[bool, str]:
         print(f"[Sandbox Self-Healing] ❌ Exception installing '{pkg_name}': {e}", flush=True)
         return False, str(e)
 
+def _extract_files_and_code(raw_text: str, default_name: str) -> dict[str, str]:
+    """
+    Extracts multiple files if structured with '### FILE: <filename>' or similar markers.
+    Falls back to a single file '{default_name}.py' from the main code block.
+    Returns: dict mapping filename -> code_content
+    """
+    files = {}
+
+    file_pattern = r"(?:^|\n)(?:###?\s*(?:FILE:?|File:?)\s*|\*\*File:?\*\*\s*|#\s*filename:\s*)([^\n\r`]+)\n```(?:python|json|yaml|txt|sh)?\s*(.*?)```"
+    matches = list(re.finditer(file_pattern, raw_text, re.DOTALL | re.IGNORECASE))
+
+    if matches:
+        for match in matches:
+            raw_path = match.group(1).strip().strip("'\"` ")
+            code = match.group(2).strip()
+            if raw_path and code:
+                clean_name = os.path.basename(raw_path)
+                files[clean_name] = code
+
+    # Fallback to single code block
+    if not files:
+        match = re.search(r"```(?:python)?\s*(.*?)```", raw_text, re.DOTALL)
+        code = match.group(1).strip() if match else raw_text.strip()
+        files[f"{default_name}.py"] = code
+
+    return files
+
 def _extract_code(raw_text: str) -> str:
-    match = re.search(r"```(?:python)?\s*(.*?)```", raw_text, re.DOTALL)
-    return match.group(1).strip() if match else raw_text.strip()
+    """Backward-compatible single block extractor."""
+    files = _extract_files_and_code(raw_text, "custom_tool")
+    if "main.py" in files:
+        return files["main.py"]
+    return list(files.values())[0] if files else raw_text.strip()
 
 def run_tool(name: str, args_payload: dict | str = "", allow_auto_install: bool = True) -> tuple[bool, str]:
     script_path = os.path.join(Config.TOOLS_DIR, f"{name}.py")
-    if not os.path.exists(script_path):
+    pkg_entry = os.path.join(Config.TOOLS_DIR, name, "main.py")
+
+    # If launcher doesn't exist but package main.py does, run package main.py directly
+    if not os.path.exists(script_path) and os.path.exists(pkg_entry):
+        script_path = pkg_entry
+    elif not os.path.exists(script_path):
         return False, f"Tool '{name}' does not exist."
 
     if isinstance(args_payload, dict):
@@ -232,7 +301,8 @@ async def create_and_run_tool(name: str, description: str, args_payload: dict | 
     prompt = (
         f"Task description: {description}\n"
         f"Expected sys.argv[1] input: {arg_str}\n"
-        f"Write the standalone Python script following the template rules."
+        f"Write the standalone Python script or package following the template rules.\n"
+        f"For modular or complex tasks, structure your output using '### FILE: <filename>' markers."
     )
     if lessons:
         prompt += f"\n\nLEARNED SYSTEM HEURISTICS FROM JOURNAL (Avoid known pitfalls):\n{lessons}\n"
@@ -241,16 +311,68 @@ async def create_and_run_tool(name: str, description: str, args_payload: dict | 
 
     for attempt in range(1, max_retries + 1):
         res = await generate("coder", prompt, system=CODER_SYSTEM_PROMPT)
-        code = _extract_code(res["text"])
+        files = _extract_files_and_code(res["text"], name)
 
-        script_path = os.path.join(Config.TOOLS_DIR, f"{name}.py")
-        with open(script_path, "w", encoding="utf-8") as f:
-            f.write(code)
+        is_multi_file = len(files) > 1 or not any(k in (f"{name}.py", "main.py") for k in files.keys())
 
-        # Allow run_tool to auto-heal missing packages if encountered
+        if not is_multi_file and len(files) == 1:
+            # Single file tool
+            code = list(files.values())[0]
+            script_path = os.path.join(Config.TOOLS_DIR, f"{name}.py")
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(code)
+            saved_main_code = code
+        else:
+            # Multi-file package tool
+            pkg_dir = os.path.join(Config.TOOLS_DIR, name)
+            os.makedirs(pkg_dir, exist_ok=True)
+            init_file = os.path.join(pkg_dir, "__init__.py")
+            if not os.path.exists(init_file):
+                with open(init_file, "w", encoding="utf-8") as f:
+                    f.write("# Package auto-generated by Muse\n")
+
+            main_code = ""
+            for fname, fcontent in files.items():
+                target_path = os.path.join(pkg_dir, fname)
+                with open(target_path, "w", encoding="utf-8") as f:
+                    f.write(fcontent)
+                if fname in ("main.py", f"{name}.py"):
+                    main_code = fcontent
+
+            # Ensure entrypoint main.py exists
+            main_path = os.path.join(pkg_dir, "main.py")
+            if not os.path.exists(main_path):
+                first_py = [k for k in files.keys() if k.endswith(".py")]
+                if first_py:
+                    main_code = files[first_py[0]]
+                    with open(main_path, "w", encoding="utf-8") as f:
+                        f.write(main_code)
+
+            # Generate top-level launcher tools/<name>.py
+            launcher_code = f'''"""Launcher for package tool: {name}"""
+import os, sys, runpy
+
+_pkg_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "{name}")
+if _pkg_dir not in sys.path:
+    sys.path.insert(0, _pkg_dir)
+
+_entry = os.path.join(_pkg_dir, "main.py")
+if __name__ == "__main__":
+    if os.path.exists(_entry):
+        runpy.run_path(_entry, run_name="__main__")
+    else:
+        sys.stderr.write("Entrypoint main.py missing in {name}\\n")
+        sys.exit(1)
+'''
+            launcher_path = os.path.join(Config.TOOLS_DIR, f"{name}.py")
+            with open(launcher_path, "w", encoding="utf-8") as f:
+                f.write(launcher_code)
+            saved_main_code = main_code or launcher_code
+
+        # Allow run_tool to execute and auto-heal missing packages if encountered
         success, output = run_tool(name, args_payload, allow_auto_install=True)
         if success:
-            await save_tool(name, description, code)
+            await save_tool(name, description, saved_main_code)
             if attempt > 1 and last_error:
                 record_lesson(
                     title=f"Fix for {name}",
@@ -264,14 +386,21 @@ async def create_and_run_tool(name: str, description: str, args_payload: dict | 
                 "output": output,
                 "attempts": attempt,
                 "model": f"{res['provider']}/{res['model']}",
+                "is_package": is_multi_file,
+                "files_count": len(files),
             }
 
         last_error = output
+        if is_multi_file:
+            broken_snippet = "\n\n".join([f"### FILE: {fn}\n```python\n{fc}\n```" for fn, fc in files.items()])
+        else:
+            broken_snippet = f"```python\n{saved_main_code}\n```"
+
         prompt = (
             f"The Python script you wrote failed with this error on attempt {attempt}/{max_retries}:\n"
             f"{last_error}\n\n"
-            f"Broken code:\n```python\n{code}\n```\n"
-            f"Diagnose and fix the issue. If standard library alternatives exist, prefer them. Ensure path variables are converted to str before os/shutil calls. Return only Python code in ```python``` fences."
+            f"Broken code:\n{broken_snippet}\n\n"
+            f"Diagnose and fix the issue. If standard library alternatives exist, prefer them. Ensure path variables are converted to str before os/shutil calls. Return valid Python code inside ```python``` fences or ### FILE: blocks."
         )
 
     return {
