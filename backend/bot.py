@@ -18,6 +18,8 @@ from core.database import load_local_manifest
 from core.sandbox import run_tool, create_and_run_tool
 from core.memory import add_message, format_history_context, clear_session, get_history, save_upload_image
 from core.watchdog import watchdog
+from core.user_profile import get_user_profile_context, format_profile_for_telegram, add_learned_rule, add_memory
+from core.evolution import reflect_and_evolve
 from main import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, _parse_json
 
 # Module-level variable to hold file handle so it's not garbage-collected
@@ -83,8 +85,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Muse Agent is online!\n\n"
         "• Send tasks, questions, or voice notes\n"
         "• Send screenshots or photos for vision analysis\n"
+        "• Use /profile to see your evolved profile & learned rules\n"
+        "• Use /learn <fact> to teach Muse preferences directly\n"
         "• Use /login <url> to authenticate web sessions on desktop\n"
-        "• Use /clear to reset memory"
+        "• Use /clear to reset conversation memory"
     )
 
 async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,7 +97,26 @@ async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     print(f"[Telegram Bot] /clear from {chat_id}", flush=True)
     clear_session(f"tg_{chat_id}")
-    await update.message.reply_text("🧹 Conversation memory cleared!")
+    await update.message.reply_text("🧹 Conversation memory cleared! (Your permanent evolved profile & skills remain intact)")
+
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Displays the user's evolved profile, location, preferences, and learned rules."""
+    if not await is_authorized(update):
+        return
+    text = format_profile_for_telegram()
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+async def learn_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows the user to explicitly teach Muse a preference, location, or rule."""
+    if not await is_authorized(update):
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: `/learn <fact or rule>`\nExample: `/learn I prefer dark mode`", parse_mode="Markdown")
+        return
+    fact = " ".join(context.args).strip()
+    add_learned_rule(fact)
+    add_memory(fact)
+    await update.message.reply_text(f"🧠 *Learned:* \"_{fact}_\"\n\nAdded to your persistent profile!", parse_mode="Markdown")
 
 async def login_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Triggers the desktop browser window to authenticate a service."""
@@ -317,6 +340,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         manifest = load_local_manifest()
         history_context = format_history_context(session_id)
+        user_profile_context = get_user_profile_context()
 
         max_steps = 4
         step_count = 0
@@ -330,6 +354,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             step_count += 1
             if not tool_trace:
                 planner_prompt = (
+                    f"{user_profile_context}\n\n"
                     f"Conversation History:\n{history_context}\n\n"
                     f"Available Tools:\n{json.dumps(manifest)}\n\n"
                     f"Current user request: {user_prompt}"
@@ -340,6 +365,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     for i, st in enumerate(tool_trace)
                 ])
                 planner_prompt = (
+                    f"{user_profile_context}\n\n"
                     f"Conversation History:\n{history_context}\n\n"
                     f"Available Tools:\n{json.dumps(manifest)}\n\n"
                     f"Steps already completed in this turn:\n{steps_summary}\n\n"
@@ -444,6 +470,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         img_to_send = images_collected[-1] if images_collected else None
         print(f"[Telegram Bot] Delivering final response ({len(reply_text)} chars, image={img_to_send}) to {chat_id}", flush=True)
         await deliver_response(update, status_msg, reply_text, img_to_send)
+
+        # Hermes autonomous evolution: reflect on this turn in the background
+        asyncio.create_task(reflect_and_evolve(user_prompt, reply_text, tool_trace))
 
     except Exception as e:
         print(f"[Telegram Bot] Message error: {e}", flush=True)
@@ -593,6 +622,9 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("clear", clear_chat))
     app.add_handler(CommandHandler("login", login_command))
+    app.add_handler(CommandHandler("profile", profile_command))
+    app.add_handler(CommandHandler("memory", profile_command))
+    app.add_handler(CommandHandler("learn", learn_command))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(IMAGE_FILTER, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

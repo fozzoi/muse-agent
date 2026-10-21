@@ -13,6 +13,10 @@ from core.router import generate
 from core.database import load_local_manifest, save_local_manifest, sync_tools_from_cloud
 from core.sandbox import run_tool, create_and_run_tool
 from core.memory import add_message, format_history_context, clear_session, load_session, get_history, save_upload_image, copy_file_to_uploads, extract_image_path, UPLOADS_DIR
+from core.user_profile import get_user_profile_context, load_profile
+from core.evolution import reflect_and_evolve
+from core.user_profile import get_user_profile_context
+from core.evolution import reflect_and_evolve
 
 ROUTER_SYSTEM_PROMPT = """You are the Lead Orchestrator for Muse on Ubuntu Linux with direct system access via tools/.
 Analyze the user request, recent conversation history, and available tools.
@@ -159,6 +163,10 @@ def clear_history(session_id: str = "web_default"):
     clear_session(session_id)
     return {"status": "cleared"}
 
+@app.get("/api/profile")
+def get_profile():
+    return load_profile()
+
 class ChatRequest(BaseModel):
     prompt: str = ""
     image: str | None = None
@@ -196,6 +204,7 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
             # 2. Multi-step agent execution loop
             manifest = load_local_manifest()
             history_context = format_history_context(session)
+            user_profile_context = get_user_profile_context()
 
             max_steps = 4
             step_count = 0
@@ -210,6 +219,7 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                 step_count += 1
                 if not tool_trace:
                     planner_prompt = (
+                        f"{user_profile_context}\n\n"
                         f"Conversation History:\n{history_context}\n\n"
                         f"Available Tools:\n{json.dumps(manifest)}\n\n"
                         f"User Request: {prompt}"
@@ -220,6 +230,7 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
                         for i, st in enumerate(tool_trace)
                     ])
                     planner_prompt = (
+                        f"{user_profile_context}\n\n"
                         f"Conversation History:\n{history_context}\n\n"
                         f"Available Tools:\n{json.dumps(manifest)}\n\n"
                         f"Steps already completed in this turn:\n{steps_summary}\n\n"
@@ -308,6 +319,9 @@ async def _stream_chat(prompt: str, image: str | None = None, mime_type: str = "
 
             add_message(session, "user", prompt)
             add_message(session, "assistant", final_text, extra={"image": web_img_url} if web_img_url else None)
+
+            # Hermes autonomous evolution: reflect on this turn in background
+            asyncio.create_task(reflect_and_evolve(prompt, final_text, tool_trace))
             yield {
                 "event": "result",
                 "data": json.dumps({

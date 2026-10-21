@@ -91,5 +91,15 @@
       "dbus",
       "gnome"
     ]
+  },
+  {
+    "id": "lesson-9",
+    "title": "User Location Provided",
+    "problem": "Agent checked weather or location-dependent info without knowing the user's location.",
+    "solution": "Remember that the user lives in Nilambur and use this for location-based queries.",
+    "tags": [
+      "user_evolved",
+      "learned_feedback"
+    ]
   }
 ]
