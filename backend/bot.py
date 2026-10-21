@@ -22,6 +22,7 @@ from core.watchdog import watchdog
 from core.user_profile import get_user_profile_context, format_profile_for_telegram, add_learned_rule, add_memory
 from core.evolution import reflect_and_evolve
 from core.quota_manager import get_all_cooldowns, get_model_operational_summary
+from core.goal_manager import plan_goal_mission, format_goal_progress, run_goal_mission
 from main import ROUTER_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, TELEGRAM_SYNTHESIS_SYSTEM_PROMPT, _parse_json
 
 # Module-level variable to hold file handle so it's not garbage-collected
@@ -100,7 +101,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 *Muse Desktop Agent is Online!*\n\n"
         "• Send tasks, system questions, or voice notes\n"
         "• Send screenshots or photos for instant vision analysis\n"
-        "• Use `/stop` to halt any ongoing task immediately\n"
+        "• Use `/goal <objective>` for autonomous multi-step goal execution\n"
+        "• Use `/stop` to halt any ongoing task or goal immediately\n"
         "• Use `/status` to view active task progress & model quotas\n"
         "• Use `/screen` to capture and inspect the active desktop\n"
         "• Use `/clear` to reset conversation context\n"
@@ -108,6 +110,112 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Use `/help` to see all commands",
         parse_mode="Markdown",
     )
+
+async def goal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sets a high-level autonomous goal that Muse executes iteratively until completed."""
+    if not await is_authorized(update):
+        return
+
+    chat_id = str(update.effective_chat.id)
+
+    # 1. If no objective argument provided, check active goal or show usage
+    if not context.args:
+        task_info = ACTIVE_TASKS.get(chat_id)
+        if task_info and task_info.get("is_goal") and task_info.get("goal_obj") and not task_info["task"].done():
+            card = format_goal_progress(task_info["goal_obj"])
+            await update.message.reply_text(card, parse_mode="Markdown")
+            return
+
+        usage_text = (
+            "🎯 *Muse Autonomous Goal Mode*\n\n"
+            "Assign an objective and Muse will autonomously plan, execute, adapt, and verify each step until completed!\n\n"
+            "*Usage:*\n"
+            "`/goal <your objective>`\n\n"
+            "*Examples:*\n"
+            "• `/goal open youtube in chrome and play one sun one moon`\n"
+            "• `/goal check system health, top memory processes, and write a summary`\n"
+            "• `/goal find the weather in Nilambur and notify me`\n\n"
+            "👉 While a goal is running, send `/stop` at any time to halt it."
+        )
+        await update.message.reply_text(usage_text, parse_mode="Markdown")
+        return
+
+    objective = " ".join(context.args).strip()
+
+    # 2. Check if a task or goal is already executing in this chat
+    if chat_id in ACTIVE_TASKS and not ACTIVE_TASKS[chat_id]["task"].done():
+        prev = ACTIVE_TASKS[chat_id]
+        if prev.get("cancel_event"):
+            prev["cancel_event"].set()
+        if prev.get("task") and not prev["task"].done():
+            prev["task"].cancel()
+        await update.message.reply_text("🔄 Halting previous mission to initiate your new goal...", quote=True)
+        await asyncio.sleep(0.2)
+
+    status_msg = await update.message.reply_text(f"🎯 *Formulating autonomous mission plan for:* \"_{objective[:60]}..._\"...", parse_mode="Markdown")
+
+    cancel_event = asyncio.Event()
+    current_task = asyncio.current_task()
+
+    try:
+        # Phase 1: Planning mission milestones
+        goal = await plan_goal_mission(objective)
+
+        ACTIVE_TASKS[chat_id] = {
+            "task": current_task,
+            "status_msg": status_msg,
+            "prompt": f"GOAL: {objective}",
+            "is_goal": True,
+            "goal_obj": goal,
+            "cancel_event": cancel_event,
+            "start_time": time.time(),
+        }
+
+        # Send initial mission plan card
+        initial_card = format_goal_progress(goal)
+        await safe_edit_text(status_msg, initial_card, parse_mode="Markdown")
+
+        async def status_updater(card_text: str):
+            await safe_edit_text(status_msg, card_text, parse_mode="Markdown")
+
+        # Phase 2: Autonomous execution loop
+        result = await run_goal_mission(goal, status_updater, cancel_event)
+
+        if cancel_event.is_set() or result.get("status") == "stopped":
+            await safe_edit_text(status_msg, f"🛑 *Mission Halted by User Request:*\n\nObjective: \"_{objective}_\"", parse_mode="Markdown")
+            return
+
+        # Phase 3: Deliver mission conclusion
+        summary = result.get("summary", "Mission completed.")
+        evidence = result.get("verification_evidence", "Verified.")
+        iter_count = result.get("current_iteration", 1)
+        elapsed = int(time.time() - result.get("start_time", time.time()))
+
+        report = (
+            f"🏁 *Goal Accomplished!*\n\n"
+            f"🎯 *Objective:* \"_{objective}_\"\n\n"
+            f"📝 *Summary:* {summary}\n\n"
+            f"🔍 *Verification Proof:* {evidence}\n\n"
+            f"📊 *Mission Stats:* Completed in {iter_count} steps ({elapsed}s)"
+        )
+
+        img_to_send = result["images_collected"][-1] if result.get("images_collected") else None
+        await deliver_response(update, status_msg, report, image_file=img_to_send)
+
+    except asyncio.CancelledError:
+        print(f"[Telegram Bot] Goal cancelled for chat {chat_id}", flush=True)
+        try:
+            await safe_edit_text(status_msg, f"🛑 *Goal Aborted:* \"_{objective[:50]}..._\"", parse_mode="Markdown")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[Telegram Bot] Goal error: {e}", flush=True)
+        try:
+            await status_msg.edit_text(f"⚠️ Goal Execution Error: {str(e)}")
+        except Exception:
+            await update.message.reply_text(f"⚠️ Goal Execution Error: {str(e)}")
+    finally:
+        ACTIVE_TASKS.pop(chat_id, None)
 
 async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Halts and cancels any currently executing task for the user."""
@@ -154,6 +262,12 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = str(update.effective_chat.id)
     task_info = ACTIVE_TASKS.get(chat_id)
+
+    if task_info and not task_info.get("task").done():
+        if task_info.get("is_goal") and task_info.get("goal_obj"):
+            card = format_goal_progress(task_info["goal_obj"])
+            await update.message.reply_text(card, parse_mode="Markdown")
+            return
 
     lines = ["⚡ *Muse Status & Activity*"]
     if task_info and not task_info.get("task").done():
@@ -232,8 +346,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     help_text = (
         "🤖 *Muse Desktop Agent Commands:*\n\n"
-        "• `/stop` — Halt and cancel the currently running task immediately\n"
-        "• `/status` — View current agent activity, steps, and model quotas\n"
+        "• `/goal <objective>` — Autonomous goal mode (plans, executes, & verifies until done)\n"
+        "• `/stop` — Halt and cancel the currently running task or goal immediately\n"
+        "• `/status` — View current agent activity, goal checklist, and model quotas\n"
         "• `/screen` — Capture live desktop screenshot and see what's on screen\n"
         "• `/clear` — Clear conversation memory and start fresh\n"
         "• `/profile` — View autonomous Hermes profile and learned preferences\n"
@@ -243,7 +358,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• `/help` — Show this command reference\n\n"
         "💬 *Tips:*\n"
         "• You can also send voice notes or images anytime!\n"
-        "• If a task is executing, simply reply `stop` or `/stop` to halt it instantly."
+        "• If a task or goal is executing, simply reply `stop` or `/stop` to halt it instantly."
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -919,6 +1034,7 @@ def main():
     async def post_init(application) -> None:
         # Register Muse's clean command menu, eliminating old Hermes commands
         commands = [
+            BotCommand("goal", "Run an autonomous multi-step mission until objective is complete"),
             BotCommand("stop", "Halt and cancel the currently running task immediately"),
             BotCommand("status", "Show active task state, running tool, and model quotas"),
             BotCommand("screen", "Capture desktop screenshot and view current screen"),
@@ -947,6 +1063,8 @@ def main():
     app = ApplicationBuilder().token(token).request(request).post_init(post_init).build()
     app.add_error_handler(error_handler)
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("goal", goal_command))
+    app.add_handler(CommandHandler("mission", goal_command))
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("cancel", stop_command))
     app.add_handler(CommandHandler("abort", stop_command))
